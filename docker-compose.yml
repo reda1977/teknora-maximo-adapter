@@ -1,0 +1,7 @@
+services:
+  migrator:
+    build: .
+    container_name: maximo_migrator
+    ports:
+      - "8800:8800"
+    restart: unless-stopped

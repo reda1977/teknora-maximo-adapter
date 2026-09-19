@@ -7,6 +7,16 @@
 
 ## التشغيل
 
+### عن طريق Docker (الأسهل، خصوصًا على السيرفر)
+
+```bash
+docker compose up --build -d
+```
+
+بعدها افتح المتصفح على: http://localhost:8800
+
+### تشغيل مباشر (من غير Docker)
+
 ```bash
 cd backend
 pip install -r ../requirements.txt
