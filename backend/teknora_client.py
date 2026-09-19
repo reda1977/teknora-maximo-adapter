@@ -70,3 +70,15 @@ class TeknoraClient:
 
     async def save_workorder(self, client: httpx.AsyncClient, wo: dict) -> dict:
         return await self._post(client, "/workorder/save", wo)
+
+    async def save_person(self, client: httpx.AsyncClient, person: dict) -> dict:
+        return await self._post(client, "/person/save", person)
+
+    async def save_craft(self, client: httpx.AsyncClient, craft: dict) -> dict:
+        return await self._post(client, "/crafts/save", craft)
+
+    async def save_meter(self, client: httpx.AsyncClient, meter: dict) -> dict:
+        return await self._post(client, "/meters/save", meter)
+
+    async def save_meter_reading(self, client: httpx.AsyncClient, reading: dict) -> dict:
+        return await self._post(client, "/meter-readings/save", reading)
