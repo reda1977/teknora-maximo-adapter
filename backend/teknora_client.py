@@ -82,3 +82,6 @@ class TeknoraClient:
 
     async def save_meter_reading(self, client: httpx.AsyncClient, reading: dict) -> dict:
         return await self._post(client, "/meter-readings/save", reading)
+
+    async def save_location_meter_reading(self, client: httpx.AsyncClient, reading: dict) -> dict:
+        return await self._post(client, "/locmeter-readings/save", reading)

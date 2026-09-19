@@ -44,9 +44,10 @@ python -m uvicorn main:app --reload --port 8800
 6. الأصول (Assets)
 7. العدادات (Meters - الكتالوج بس)
 8. أوامر الشغل (Work Orders)
-9. قراءات العدادات التاريخية (Meter Readings) - محتاجة الأصول تتنقل الأول
-10. خطط العمل (Job Plans)
-11. الصيانة الوقائية (PM) - محتاجة خطط العمل والأصول يتنقلوا الأول
+9. قراءات عدادات الأصول التاريخية - محتاجة الأصول تتنقل الأول
+10. قراءات عدادات المواقع التاريخية - محتاجة المواقع تتنقل الأول
+11. خطط العمل (Job Plans)
+12. الصيانة الوقائية (PM) - محتاجة خطط العمل والأصول يتنقلوا الأول
 
 **ملحوظة**: أوامر الشغل بتتنقل قبل خطط العمل (بناءً على طلب صريح)، فمبنبعتش
 حقل `jpnum` (ربط أمر الشغل بخطة العمل) وقت نقل أوامر الشغل - الخطة لسه
@@ -66,13 +67,10 @@ python -m uvicorn main:app --reload --port 8800
 | أوامر الشغل | `mxwo` | ✅ متأكد فعليًا |
 | خطط العمل | `mxapijobplan` | ✅ متأكد فعليًا (لاحظ بادئة "MXAPI" مش "MX") |
 | الصيانة الوقائية | `mxapipm` | ✅ متأكد فعليًا (نفس نمط "MXAPI") |
-| قراءات العدادات التاريخية | `mxmeterdata` | ✅ الاسم متأكد ("Meter Reading Definition")، بس حقول السجل نفسه (assetnum/metername/reading/readingdate) تخمين مبني على تسمية Maximo القياسية |
+| قراءات عدادات الأصول التاريخية | `mxmeterdata` | ✅ الاسم متأكد ("Meter Reading Definition")، بس حقول السجل نفسه (assetnum/metername/reading/readingdate) تخمين مبني على تسمية Maximo القياسية |
+| قراءات عدادات المواقع التاريخية | `oslclocationmeter` | ⚠️ الاسم اتلقى فعليًا ("Oslc Location Meter"، مُستهلك بواسطة OSLC، نفس نمط `oslcmeter`)، بس حقوله (location/metername/lastreading/lastreadingdate) لسه تخمين |
 | العدادات (الكتالوج) | `oslcmeter` | ⚠️ الاسم اتلقى فعليًا ("Oslc Meter Definition"، مُستهلك بواسطة OSLC)، بس حقوله (metername/metertype/uom) لسه تخمين |
 | العمالة | `mxlabor` | ⚠️ تخمين مبني على نفس نمط التسمية ("Labor Definition")، فيه بديل موجود اسمه `MXAPILABOR` لو ده غلط |
-
-قراءات عدادات المواقع (Location Meter Readings، `/locmeter-readings/save`
-في تكنورا) مش مضافة لسه - مفيش Object Structure واضح لقراءات المواقع
-تحديدًا (بعكس قراءات الأصول)، ومحتاج بحث إضافي لو لزم الأمر.
 
 لو أي اسم من دول اتغيّر أو غلط، هتلاقي رسالة الخطأ الحقيقية من Maximo
 (زي `BMXAA4216E - Unknown Object`) في تقرير النقل النهائي بدل ما الأداة
@@ -83,8 +81,8 @@ python -m uvicorn main:app --reload --port 8800
 - أسماء حقول تكنورا (في `backend/migration.py`) مبنية على أعمدة
   SQLAlchemy الحقيقية بتاعة تكنورا، لكن نقاط الحفظ (`/assets/save`،
   `/workorder/save`، `/jobplans/save`، `/labor/save`، `/pm/save`،
-  `/person/save`، `/crafts/save`، `/meters/save`،
-  `/meter-readings/save`) في توثيق الـ API الحقيقي بتقبل أي شكل JSON
+  `/person/save`، `/crafts/save`، `/meters/save`، `/meter-readings/save`،
+  `/locmeter-readings/save`) في توثيق الـ API الحقيقي بتقبل أي شكل JSON
   (`additionalProperties: true`) من غير تحقق موثّق مسبقًا - يعني لو
   حقل معين مش متطابق 100%، هيظهر في قائمة "السجلات اللي فشلت"
   بالتقرير النهائي مع رسالة الخطأ الحقيقية من السيرفر، مش هيفشل بصمت.

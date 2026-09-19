@@ -28,7 +28,7 @@ def _describe_exc(e: Exception) -> str:
 
 MIGRATION_ORDER = [
     "organizations", "persons", "crafts", "labor", "locations", "assets",
-    "meters", "workorders", "meterreadings", "jobplans", "pm",
+    "meters", "workorders", "meterreadings", "locationmeterreadings", "jobplans", "pm",
 ]
 # تسمية الأنواع (بالعربي والإنجليزي) مسؤولية الواجهة الأمامية بالكامل -
 # الباك إند بيرجع بس المفاتيح التقنية (زي "assets")، عشان تبديل اللغة
@@ -191,6 +191,15 @@ def map_meter_reading(m: dict) -> dict:
     }
 
 
+def map_location_meter_reading(m: dict) -> dict:
+    return {
+        "location_id": m.get("location"),
+        "meter_num": m.get("metername"),
+        "reading_value": m.get("lastreading") or m.get("reading") or m.get("newreading"),
+        "reading_date": m.get("lastreadingdate") or m.get("readingdate"),
+    }
+
+
 # جدول واحد بيربط كل نوع بـ: اسم Object Structure في Maximo (None يعني
 # دالة جلب خاصة، شوف organizations)، اسم الحقل المرجعي للتقرير (من بيانات
 # Maximo الخام قبل التحويل)، دالة التحويل لحقول تكنورا، واسم دالة الحفظ
@@ -205,6 +214,7 @@ TYPE_SPECS = {
     "meters": {"os": "oslcmeter", "ref": "metername", "map": map_meter, "save": "save_meter"},
     "workorders": {"os": "mxwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
+    "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
     "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan"},
     "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm"},
 }
