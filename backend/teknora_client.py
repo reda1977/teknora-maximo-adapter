@@ -62,5 +62,11 @@ class TeknoraClient:
     async def save_jobplan(self, client: httpx.AsyncClient, jp: dict) -> dict:
         return await self._post(client, "/jobplans/save", jp)
 
+    async def save_labor(self, client: httpx.AsyncClient, labor: dict) -> dict:
+        return await self._post(client, "/labor/save", labor)
+
+    async def save_pm(self, client: httpx.AsyncClient, pm: dict) -> dict:
+        return await self._post(client, "/pm/save", pm)
+
     async def save_workorder(self, client: httpx.AsyncClient, wo: dict) -> dict:
         return await self._post(client, "/workorder/save", wo)

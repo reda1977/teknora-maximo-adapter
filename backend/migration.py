@@ -5,7 +5,7 @@
 نهائي مفصّل.
 
 ترتيب الهجرة إجباري بسبب الروابط بين الجداول في تكنورا:
-Organizations+Sites -> Locations -> Assets -> Job Plans -> Work Orders
+Organizations+Sites -> Locations -> Assets -> Labor -> Job Plans -> PM -> Work Orders
 """
 from datetime import datetime, timezone
 
@@ -21,7 +21,7 @@ def _describe_exc(e: Exception) -> str:
     return str(e) or type(e).__name__
 
 
-MIGRATION_ORDER = ["organizations", "locations", "assets", "jobplans", "workorders"]
+MIGRATION_ORDER = ["organizations", "locations", "assets", "labor", "jobplans", "pm", "workorders"]
 # تسمية الأنواع (بالعربي والإنجليزي) مسؤولية الواجهة الأمامية بالكامل -
 # الباك إند بيرجع بس المفاتيح التقنية (زي "assets")، عشان تبديل اللغة
 # يكون قرار واجهة بحت من غير أي تكرار للترجمة في مكانين
@@ -83,6 +83,36 @@ def map_jobplan(m: dict) -> dict:
         "status": m.get("status") or "ACTIVE",
         "org_id": m.get("orgid"),
         "site_id": m.get("siteid"),
+    }
+
+
+def map_labor(m: dict) -> dict:
+    # عمدًا مبنبعتش personid/craft_code - الاتنين FK اختياريين في تكنورا
+    # (personid لازم يشاور على سجل Person حقيقي مش جزء من نطاق النقل ده)
+    return {
+        "laborcode": m.get("laborcode"),
+        "site_id": m.get("siteid"),
+        "org_id": m.get("orgid"),
+        "status": m.get("status") or "ACTIVE",
+        # اسم الحقل ده تخمين لسه محتاج تأكيد (payrate/actrate بيختلف
+        # حسب النسخة) - لو غلط هيظهر واضح كـ "فشل" مش هيوقف باقي السجلات
+        "actual_rate": m.get("payrate") or m.get("actrate"),
+    }
+
+
+def map_pm(m: dict) -> dict:
+    return {
+        "pmnum": m.get("pmnum"),
+        "description": m.get("description") or m.get("pmnum"),
+        "status": m.get("status") or "ACTIVE",
+        "org_id": m.get("orgid"),
+        "site_id": m.get("siteid"),
+        "assetnum": m.get("assetnum") or None,
+        "location": m.get("location") or None,
+        "asset_loc": m.get("location") or None,
+        "worktype": m.get("worktype") or "PM",
+        "priority": m.get("priority") or 3,
+        "jpnum": m.get("jpnum") or None,
     }
 
 
@@ -163,8 +193,12 @@ class MigrationRun:
                 records = await self.maximo.query_all("mxoperloc")
             elif type_key == "assets":
                 records = await self.maximo.query_all("mxasset")
+            elif type_key == "labor":
+                records = await self.maximo.query_all("mxlabor")
             elif type_key == "jobplans":
-                records = await self.maximo.query_all("mxjobplan")
+                records = await self.maximo.query_all("mxapijobplan")
+            elif type_key == "pm":
+                records = await self.maximo.query_all("mxapipm")
             elif type_key == "workorders":
                 records = await self.maximo.query_all("mxwo")
             else:
@@ -190,9 +224,15 @@ class MigrationRun:
                 elif type_key == "assets":
                     ref = r.get("assetnum")
                     await self.teknora.save_asset(client, map_asset(r))
+                elif type_key == "labor":
+                    ref = r.get("laborcode")
+                    await self.teknora.save_labor(client, map_labor(r))
                 elif type_key == "jobplans":
                     ref = r.get("jpnum")
                     await self.teknora.save_jobplan(client, map_jobplan(r))
+                elif type_key == "pm":
+                    ref = r.get("pmnum")
+                    await self.teknora.save_pm(client, map_pm(r))
                 elif type_key == "workorders":
                     ref = r.get("wonum")
                     await self.teknora.save_workorder(client, map_workorder(r))

@@ -94,7 +94,9 @@ async def maximo_summary():
         "organizations": "mxorganization",
         "locations": "mxoperloc",
         "assets": "mxasset",
-        "jobplans": "mxjobplan",
+        "labor": "mxlabor",
+        "jobplans": "mxapijobplan",
+        "pm": "mxapipm",
         "workorders": "mxwo",
     }
     for type_key, os_name in checks.items():
