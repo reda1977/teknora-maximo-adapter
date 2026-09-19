@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" id="html-root">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maximo → Teknora Migrator</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --bg-2: #0f1829;
+    --panel: #141e33;
+    --panel-2: #1b2740;
+    --border: #263250;
+    --text: #e7ecf7;
+    --text-dim: #8b98b8;
+    --accent: #4f7cff;
+    --accent-2: #3b63e0;
+    --accent-soft: rgba(79,124,255,.14);
+    --success: #2fd480;
+    --success-soft: rgba(47,212,128,.12);
+    --danger: #ff5d7a;
+    --danger-soft: rgba(255,93,122,.12);
+    --warn: #ffb648;
+    --warn-soft: rgba(255,182,72,.12);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+    background:
+      radial-gradient(1200px 600px at 15% -10%, rgba(79,124,255,.12), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(47,212,128,.08), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 28px 16px 60px;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; }
+
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; gap: 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .logo {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), #7aa2ff);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 20px rgba(79,124,255,.35);
+  }
+  .brand h1 { font-size: 19px; margin: 0; }
+  .brand p { margin: 2px 0 0; color: var(--text-dim); font-size: 13px; }
+  .lang-toggle {
+    display: flex; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 3px;
+  }
+  .lang-toggle button {
+    background: transparent; border: none; color: var(--text-dim); font-weight: 700; font-size: 13px;
+    padding: 7px 14px; border-radius: 8px; cursor: pointer; transition: all .15s;
+  }
+  .lang-toggle button.active { background: var(--accent); color: white; }
+
+  .steps { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
+  .step-pill {
+    flex: 1; min-width: 110px; display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 11px 8px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border);
+    font-size: 12.5px; font-weight: 700; color: var(--text-dim); transition: all .2s;
+  }
+  .step-pill svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .step-pill.active { background: var(--accent); color: white; border-color: var(--accent); box-shadow: 0 4px 16px rgba(79,124,255,.3); }
+  .step-pill.done { background: var(--success-soft); color: var(--success); border-color: rgba(47,212,128,.35); }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 18px;
+    padding: 26px; margin-bottom: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.2);
+  }
+  .card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .card-head .icon-badge {
+    width: 40px; height: 40px; border-radius: 11px; background: var(--accent-soft);
+    display: flex; align-items: center; justify-content: center; color: var(--accent); flex-shrink: 0;
+  }
+  .card-head .icon-badge svg { width: 20px; height: 20px; }
+  .card-head h2 { font-size: 16px; margin: 0; }
+  .card-head p { margin: 2px 0 0; color: var(--text-dim); font-size: 12.5px; }
+
+  label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg-2); color: var(--text); font-size: 14px; margin-bottom: 14px; transition: border-color .15s;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; border: none; padding: 12px 22px;
+    border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; transition: transform .1s, box-shadow .15s;
+    display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 6px 18px rgba(79,124,255,.3);
+  }
+  button.primary:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(79,124,255,.4); }
+  button.primary:disabled { background: #384258; cursor: not-allowed; box-shadow: none; transform: none; }
+  button.secondary {
+    background: transparent; border: 1px solid var(--border); color: var(--text); padding: 11px 20px;
+    border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+  }
+  button.secondary:hover { background: var(--panel-2); }
+  button svg { width: 16px; height: 16px; }
+
+  .msg { padding: 11px 15px; border-radius: 10px; font-size: 13px; margin-bottom: 14px; display: none; align-items: center; gap: 8px; }
+  .msg svg { width: 16px; height: 16px; flex-shrink: 0; }
+  .msg.error { background: var(--danger-soft); color: #ffb3c1; border: 1px solid rgba(255,93,122,.3); display: flex; }
+  .msg.success { background: var(--success-soft); color: #8bf0bf; border: 1px solid rgba(47,212,128,.3); display: flex; }
+
+  .type-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 22px; }
+  .type-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 13px 16px;
+    transition: border-color .15s;
+  }
+  .type-row:has(input:checked) { border-color: rgba(79,124,255,.4); }
+  .type-row .left { display: flex; align-items: center; gap: 12px; }
+  .type-row .type-icon {
+    width: 34px; height: 34px; border-radius: 9px; background: var(--accent-soft); color: var(--accent);
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .type-row .type-icon svg { width: 17px; height: 17px; }
+  .type-row label { margin: 0; color: var(--text); font-weight: 700; font-size: 14px; cursor: pointer; }
+  .type-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+  .type-count { color: var(--text-dim); font-size: 13px; font-weight: 600; }
+  .type-count.err { color: var(--danger); }
+
+  .progress-row { margin-bottom: 20px; }
+  .progress-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 8px; }
+  .progress-head .left { display: flex; align-items: center; gap: 10px; }
+  .progress-head .type-icon { width: 26px; height: 26px; border-radius: 7px; }
+  .progress-head .type-icon svg { width: 14px; height: 14px; }
+  .progress-head .label { font-weight: 700; }
+  .progress-head .stats { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .bar-track { background: var(--bg-2); border-radius: 999px; height: 11px; overflow: hidden; border: 1px solid var(--border); }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), #7aa2ff); transition: width .3s; border-radius: 999px; }
+  .bar-fill.done { background: linear-gradient(90deg, var(--success), #6be8ac); }
+  .bar-fill.has-fail { background: linear-gradient(90deg, var(--warn), #ffcb7d); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 700; text-align: inherit; }
+  td.ref { font-weight: 700; font-variant-numeric: tabular-nums; }
+  td.err { color: #ffb3c1; }
+
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; margin-bottom: 22px; }
+  .summary-tile {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 14px; padding: 16px; text-align: center;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .summary-tile .type-icon { width: 36px; height: 36px; border-radius: 10px; margin-bottom: 2px; }
+  .summary-tile .num { font-size: 26px; font-weight: 800; color: var(--success); font-variant-numeric: tabular-nums; }
+  .summary-tile .num.has-fail { color: var(--warn); }
+  .summary-tile .lbl { color: var(--text-dim); font-size: 12px; }
+
+  .actions { display: flex; gap: 10px; margin-top: 22px; }
+  .hint { color: var(--text-dim); font-size: 12.5px; margin: -6px 0 16px; display: flex; align-items: center; gap: 6px; }
+  .hint svg { width: 14px; height: 14px; flex-shrink: 0; }
+  .empty-state { text-align: center; padding: 20px; color: var(--success); font-weight: 700; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .empty-state svg { width: 40px; height: 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M3 16v5h5"/><path d="M16 21h5v-5"/><path d="M15 9l6-6"/><path d="M9 15l-6 6"/></svg>
+      </div>
+      <div>
+        <h1 data-i18n="app_title">أداة نقل البيانات</h1>
+        <p data-i18n="app_subtitle">من IBM Maximo إلى تكنورا</p>
+      </div>
+    </div>
+    <div class="lang-toggle">
+      <button id="lang-ar" onclick="setLang('ar')">العربية</button>
+      <button id="lang-en" onclick="setLang('en')">English</button>
+    </div>
+  </div>
+
+  <div class="steps">
+    <div class="step-pill" id="pill-1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+      <span data-i18n="step1_pill">Maximo</span>
+    </div>
+    <div class="step-pill" id="pill-2">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>
+      <span data-i18n="step2_pill">Teknora</span>
+    </div>
+    <div class="step-pill" id="pill-3">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      <span data-i18n="step3_pill">Select</span>
+    </div>
+    <div class="step-pill" id="pill-4">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      <span data-i18n="step4_pill">Migrate</span>
+    </div>
+    <div class="step-pill" id="pill-5">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      <span data-i18n="step5_pill">Report</span>
+    </div>
+  </div>
+
+  <!-- Step 1: Maximo -->
+  <div class="card" id="step-1">
+    <div class="card-head">
+      <div class="icon-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+      </div>
+      <div>
+        <h2 data-i18n="step1_title">الخطوة 1: الاتصال بـ IBM Maximo</h2>
+        <p data-i18n="step1_desc">بيانات دخول حقيقية على نظام Maximo المصدر</p>
+      </div>
+    </div>
+    <div class="msg" id="msg-1"></div>
+    <label data-i18n="max_url_label">رابط Maximo الأساسي (شامل /maximo)</label>
+    <input type="text" id="max-url" placeholder="http://172.18.0.1:9080/maximo" dir="ltr">
+    <div class="row">
+      <div>
+        <label data-i18n="username_label">اليوزرنيم</label>
+        <input type="text" id="max-user" dir="ltr">
+      </div>
+      <div>
+        <label data-i18n="password_label">الباسورد</label>
+        <input type="password" id="max-pass" dir="ltr">
+      </div>
+    </div>
+    <button class="primary" onclick="connectMaximo()" id="btn-max">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      <span data-i18n="connect_btn">اتصال واستمرار</span>
+    </button>
+  </div>
+
+  <!-- Step 2: Teknora -->
+  <div class="card" id="step-2" style="display:none">
+    <div class="card-head">
+      <div class="icon-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>
+      </div>
+      <div>
+        <h2 data-i18n="step2_title">الخطوة 2: الاتصال بتكنورا</h2>
+        <p data-i18n="step2_desc">النظام الوجهة اللي هتتنقل له البيانات</p>
+      </div>
+    </div>
+    <div class="msg" id="msg-2"></div>
+    <label data-i18n="tek_url_label">رابط API تكنورا (شامل /api)</label>
+    <input type="text" id="tek-url" placeholder="https://app.teknora-eam.com/api" dir="ltr">
+    <div class="row">
+      <div>
+        <label data-i18n="username_email_label">اليوزرنيم / الإيميل</label>
+        <input type="text" id="tek-user" dir="ltr">
+      </div>
+      <div>
+        <label data-i18n="password_label">الباسورد</label>
+        <input type="password" id="tek-pass" dir="ltr">
+      </div>
+    </div>
+    <button class="primary" onclick="connectTeknora()" id="btn-tek">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      <span data-i18n="connect_btn">اتصال واستمرار</span>
+    </button>
+  </div>
+
+  <!-- Step 3: Select data -->
+  <div class="card" id="step-3" style="display:none">
+    <div class="card-head">
+      <div class="icon-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      </div>
+      <div>
+        <h2 data-i18n="step3_title">الخطوة 3: اختار البيانات اللي عايز تنقلها</h2>
+        <p data-i18n="step3_desc">الأنواع المكتشفة فعليًا في Maximo، مع عدد تقريبي لكل واحد</p>
+      </div>
+    </div>
+    <div class="type-list" id="type-list"></div>
+    <button class="primary" onclick="startMigration()" id="btn-start">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <span data-i18n="start_migration_btn">ابدأ النقل</span>
+    </button>
+  </div>
+
+  <!-- Step 4: Progress -->
+  <div class="card" id="step-4" style="display:none">
+    <div class="card-head">
+      <div class="icon-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      </div>
+      <div>
+        <h2 data-i18n="step4_title">الخطوة 4: جاري النقل...</h2>
+        <p data-i18n="step4_desc">متسيبش الصفحة دي مقفولة لحد ما تخلص</p>
+      </div>
+    </div>
+    <div id="progress-list"></div>
+  </div>
+
+  <!-- Step 5: Report -->
+  <div class="card" id="step-5" style="display:none">
+    <div class="card-head">
+      <div class="icon-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      </div>
+      <div>
+        <h2 data-i18n="step5_title">الخطوة 5: التقرير النهائي</h2>
+        <p data-i18n="step5_desc">ملخص كل نوع بيانات وأي سجلات فشلت مع السبب</p>
+      </div>
+    </div>
+    <div class="summary-grid" id="report-summary"></div>
+    <div id="report-failures"></div>
+    <div class="actions">
+      <button class="secondary" onclick="location.reload()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        <span data-i18n="new_migration_btn">نقل جديد</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+const ICONS = {
+  organizations: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01"/><path d="M9 12v.01"/><path d="M9 15v.01"/><path d="M9 18v.01"/></svg>',
+  locations: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>',
+  assets: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+  jobplans: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="15" y2="16"/></svg>',
+  workorders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+};
+
+const I18N = {
+  ar: {
+    app_title: 'أداة نقل البيانات', app_subtitle: 'من IBM Maximo إلى تكنورا',
+    step1_pill: 'Maximo', step2_pill: 'تكنورا', step3_pill: 'الاختيار', step4_pill: 'النقل', step5_pill: 'التقرير',
+    step1_title: 'الخطوة 1: الاتصال بـ IBM Maximo', step1_desc: 'بيانات دخول حقيقية على نظام Maximo المصدر',
+    step2_title: 'الخطوة 2: الاتصال بتكنورا', step2_desc: 'النظام الوجهة اللي هتتنقل له البيانات',
+    step3_title: 'الخطوة 3: اختار البيانات اللي عايز تنقلها', step3_desc: 'الأنواع المكتشفة فعليًا في Maximo، مع عدد تقريبي لكل واحد',
+    step4_title: 'الخطوة 4: جاري النقل...', step4_desc: 'متسيبش الصفحة دي مقفولة لحد ما تخلص',
+    step5_title: 'الخطوة 5: التقرير النهائي', step5_desc: 'ملخص كل نوع بيانات وأي سجلات فشلت مع السبب',
+    max_url_label: 'رابط Maximo الأساسي (شامل /maximo)',
+    tek_url_label: 'رابط API تكنورا (شامل /api)',
+    username_label: 'اليوزرنيم', username_email_label: 'اليوزرنيم / الإيميل', password_label: 'الباسورد',
+    connect_btn: 'اتصال واستمرار', connecting_btn: 'جاري الاتصال...',
+    start_migration_btn: 'ابدأ النقل', new_migration_btn: 'نقل جديد',
+    counts_hint: 'الأعداد دي تقريبية (استعلام سريع من غير جلب تفاصيل كل سجل).',
+    loading_counts: 'جاري جلب الأعداد من Maximo...',
+    records_suffix: 'سجل', error_prefix: 'خطأ: ',
+    stats_template: (done,total,success,failed) => `${done} / ${total} (نجح ${success}، فشل ${failed})`,
+    failures_title: (n) => `السجلات اللي فشلت (${n})`,
+    th_type: 'النوع', th_ref: 'المرجع', th_reason: 'سبب الفشل',
+    all_success: 'كل السجلات اتنقلت بنجاح من غير أي فشل 🎉',
+    fatal_error_prefix: 'خطأ عام أوقف العملية: ',
+    select_one_alert: 'اختار نوع بيانات واحد على الأقل',
+    start_failed_alert: 'فشل بدء النقل',
+    types: { organizations: 'المنظمات والمواقع (Sites)', locations: 'المواقع (Locations)', assets: 'الأصول (Assets)', jobplans: 'خطط العمل (Job Plans)', workorders: 'أوامر الشغل (Work Orders)' },
+  },
+  en: {
+    app_title: 'Data Migration Tool', app_subtitle: 'IBM Maximo → Teknora',
+    step1_pill: 'Maximo', step2_pill: 'Teknora', step3_pill: 'Select', step4_pill: 'Migrate', step5_pill: 'Report',
+    step1_title: 'Step 1: Connect to IBM Maximo', step1_desc: 'Real credentials for the source Maximo system',
+    step2_title: 'Step 2: Connect to Teknora', step2_desc: 'The destination system data will be migrated to',
+    step3_title: 'Step 3: Choose what to migrate', step3_desc: 'Types actually detected in Maximo, with an approximate count for each',
+    step4_title: 'Step 4: Migrating...', step4_desc: "Don't close this page until it's finished",
+    step5_title: 'Step 5: Final Report', step5_desc: 'Summary for each data type and any failed records with the reason',
+    max_url_label: 'Maximo base URL (including /maximo)',
+    tek_url_label: 'Teknora API URL (including /api)',
+    username_label: 'Username', username_email_label: 'Username / Email', password_label: 'Password',
+    connect_btn: 'Connect & Continue', connecting_btn: 'Connecting...',
+    start_migration_btn: 'Start Migration', new_migration_btn: 'New Migration',
+    counts_hint: 'These counts are approximate (a quick query, without fetching every record in full).',
+    loading_counts: 'Fetching counts from Maximo...',
+    records_suffix: 'records', error_prefix: 'Error: ',
+    stats_template: (done,total,success,failed) => `${done} / ${total} (${success} ok, ${failed} failed)`,
+    failures_title: (n) => `Failed records (${n})`,
+    th_type: 'Type', th_ref: 'Reference', th_reason: 'Failure reason',
+    all_success: 'All records migrated successfully with no failures 🎉',
+    fatal_error_prefix: 'A general error stopped the process: ',
+    select_one_alert: 'Select at least one data type',
+    start_failed_alert: 'Failed to start migration',
+    types: { organizations: 'Organizations & Sites', locations: 'Locations', assets: 'Assets', jobplans: 'Job Plans', workorders: 'Work Orders' },
+  },
+};
+
+let currentLang = 'ar';
+const API = '';
+let pollTimer = null;
+
+function t(key) { return I18N[currentLang][key]; }
+
+function setLang(lang) {
+  currentLang = lang;
+  document.getElementById('html-root').lang = lang;
+  document.getElementById('html-root').dir = lang === 'ar' ? 'rtl' : 'ltr';
+  document.getElementById('lang-ar').classList.toggle('active', lang === 'ar');
+  document.getElementById('lang-en').classList.toggle('active', lang === 'en');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (I18N[lang][key]) el.textContent = I18N[lang][key];
+  });
+  try { localStorage.setItem('migrator-lang', lang); } catch (e) {}
+}
+
+function showStep(n) {
+  for (let i = 1; i <= 5; i++) {
+    document.getElementById('step-' + i).style.display = (i === n) ? 'block' : 'none';
+    const pill = document.getElementById('pill-' + i);
+    pill.classList.toggle('active', i === n);
+    pill.classList.toggle('done', i < n);
+  }
+}
+
+function iconSvg(name) { return ICONS[name] || ''; }
+
+function showMsg(id, text, type) {
+  const el = document.getElementById(id);
+  const icon = type === 'success'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
+  el.innerHTML = icon + '<span>' + text + '</span>';
+  el.className = 'msg ' + type;
+}
+
+async function connectMaximo() {
+  const btn = document.getElementById('btn-max');
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true; btn.querySelector('span').textContent = t('connecting_btn');
+  try {
+    const res = await fetch(API + '/api/connect/maximo', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        base_url: document.getElementById('max-url').value.trim(),
+        username: document.getElementById('max-user').value.trim(),
+        password: document.getElementById('max-pass').value,
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Connection failed');
+    showMsg('msg-1', data.message, 'success');
+    setTimeout(() => showStep(2), 500);
+  } catch (e) {
+    showMsg('msg-1', e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.innerHTML = originalHtml;
+  }
+}
+
+async function connectTeknora() {
+  const btn = document.getElementById('btn-tek');
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true; btn.querySelector('span').textContent = t('connecting_btn');
+  try {
+    const res = await fetch(API + '/api/connect/teknora', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        base_url: document.getElementById('tek-url').value.trim(),
+        username: document.getElementById('tek-user').value.trim(),
+        password: document.getElementById('tek-pass').value,
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Connection failed');
+    showMsg('msg-2', data.message, 'success');
+    setTimeout(() => { showStep(3); loadSummary(); }, 500);
+  } catch (e) {
+    showMsg('msg-2', e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.innerHTML = originalHtml;
+  }
+}
+
+async function loadSummary() {
+  const list = document.getElementById('type-list');
+  list.innerHTML = `<p class="hint">${t('loading_counts')}</p>`;
+  const res = await fetch(API + '/api/maximo/summary');
+  const data = await res.json();
+  list.innerHTML = '';
+  for (const key of data.order) {
+    const count = data.counts[key];
+    const err = data.errors[key];
+    const row = document.createElement('div');
+    row.className = 'type-row';
+    row.innerHTML = `
+      <div class="left">
+        <div class="type-icon">${iconSvg(key)}</div>
+        <label><input type="checkbox" value="${key}" ${err ? '' : 'checked'} ${err ? 'disabled' : ''}> ${t('types')[key]}</label>
+      </div>
+      <span class="type-count ${err ? 'err' : ''}">${err ? t('error_prefix') + err : (count + ' ' + t('records_suffix'))}</span>
+    `;
+    list.appendChild(row);
+  }
+}
+
+async function startMigration() {
+  const checked = Array.from(document.querySelectorAll('#type-list input[type=checkbox]:checked')).map(c => c.value);
+  if (checked.length === 0) { alert(t('select_one_alert')); return; }
+
+  const res = await fetch(API + '/api/migrate/start', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ types: checked })
+  });
+  if (!res.ok) { const d = await res.json(); alert(d.detail || t('start_failed_alert')); return; }
+
+  showStep(4);
+  pollTimer = setInterval(pollProgress, 1000);
+  pollProgress();
+}
+
+function renderProgress(state) {
+  const container = document.getElementById('progress-list');
+  container.innerHTML = '';
+  for (const key of state.order) {
+    const tp = state.types[key];
+    if (!tp) continue;
+    const pct = tp.total > 0 ? Math.round((tp.done / tp.total) * 100) : 100;
+    const barClass = tp.done < tp.total ? '' : (tp.failed > 0 ? 'has-fail' : 'done');
+    const div = document.createElement('div');
+    div.className = 'progress-row';
+    div.innerHTML = `
+      <div class="progress-head">
+        <div class="left">
+          <div class="type-icon">${iconSvg(key)}</div>
+          <span class="label">${t('types')[key]}</span>
+        </div>
+        <span class="stats">${t('stats_template')(tp.done, tp.total, tp.success, tp.failed)}</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
+    `;
+    container.appendChild(div);
+  }
+}
+
+async function pollProgress() {
+  const res = await fetch(API + '/api/migrate/progress');
+  const state = await res.json();
+  renderProgress(state);
+  if (state.status === 'done') {
+    clearInterval(pollTimer);
+    setTimeout(() => { showStep(5); renderReport(state); }, 400);
+  }
+}
+
+function renderReport(state) {
+  const summaryEl = document.getElementById('report-summary');
+  const failuresEl = document.getElementById('report-failures');
+  summaryEl.innerHTML = '';
+  let allFailures = [];
+
+  for (const key of state.order) {
+    const tp = state.types[key];
+    if (!tp) continue;
+    const tile = document.createElement('div');
+    tile.className = 'summary-tile';
+    tile.innerHTML = `
+      <div class="type-icon">${iconSvg(key)}</div>
+      <div class="num ${tp.failed > 0 ? 'has-fail' : ''}">${tp.success}</div>
+      <div class="lbl">${t('types')[key]}${tp.failed > 0 ? ` (${tp.failed} ✗)` : ''}</div>
+    `;
+    summaryEl.appendChild(tile);
+    for (const f of tp.failures) allFailures.push({ type: t('types')[key], ...f });
+  }
+
+  failuresEl.innerHTML = '';
+  if (state.fatal_error) {
+    const msg = document.createElement('div');
+    msg.className = 'msg error';
+    msg.style.display = 'flex';
+    msg.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>${t('fatal_error_prefix')}${state.fatal_error}</span>`;
+    failuresEl.appendChild(msg);
+  }
+
+  if (allFailures.length > 0) {
+    let html = '<h3 style="font-size:15px;margin-bottom:10px;">' + t('failures_title')(allFailures.length) + '</h3>';
+    html += `<table><thead><tr><th>${t('th_type')}</th><th>${t('th_ref')}</th><th>${t('th_reason')}</th></tr></thead><tbody>`;
+    for (const f of allFailures) {
+      html += `<tr><td>${f.type}</td><td class="ref">${f.ref}</td><td class="err">${f.error}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    failuresEl.innerHTML += html;
+  } else if (!state.fatal_error) {
+    failuresEl.innerHTML = `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>${t('all_success')}</div>`;
+  }
+}
+
+// تحميل اللغة المحفوظة (لو موجودة) وإلا الافتراضي عربي
+(function init() {
+  let saved = 'ar';
+  try { saved = localStorage.getItem('migrator-lang') || 'ar'; } catch (e) {}
+  setLang(saved);
+  showStep(1);
+})();
+</script>
+</body>
+</html>
