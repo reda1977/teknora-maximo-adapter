@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from maximo_client import MaximoClient, MaximoAuthError
 from teknora_client import TeknoraClient, TeknoraAuthError
-from migration import MigrationRun, MIGRATION_ORDER
+from migration import MigrationRun, MIGRATION_ORDER, TYPE_SPECS
 
 app = FastAPI(title="Maximo -> Teknora Migrator")
 app.add_middleware(
@@ -90,14 +90,8 @@ async def maximo_summary():
 
     counts = {}
     errors = {}
-    checks = {
-        "organizations": "mxorganization",
-        "locations": "mxoperloc",
-        "assets": "mxasset",
-        "jobplans": "mxjobplan",
-        "workorders": "mxwo",
-    }
-    for type_key, os_name in checks.items():
+    for type_key, spec in TYPE_SPECS.items():
+        os_name = spec.get("count_os", spec["os"])
         try:
             counts[type_key] = await client.count_collection(os_name)
         except Exception as e:

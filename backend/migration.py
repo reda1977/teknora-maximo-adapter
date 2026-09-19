@@ -5,7 +5,12 @@
 نهائي مفصّل.
 
 ترتيب الهجرة إجباري بسبب الروابط بين الجداول في تكنورا:
-Organizations+Sites -> Locations -> Assets -> Job Plans -> Work Orders
+Organizations+Sites -> Persons -> Crafts -> Labor -> Locations -> Assets ->
+Meters -> Work Orders -> Meter Readings -> Job Plans -> PM
+
+ملحوظة: أوامر الشغل بتتنقل قبل خطط العمل (بناءً على ترتيب مطلوب)، فمبنبعتش
+ربط jpnum في أمر الشغل وقتها (الخطة لسه مش موجودة في تكنورا) - نفس مبدأ
+عدم إرسال حقول لسه مفيش بيانات حقيقية ليها بدل ما نخمّن ونفشل.
 """
 from datetime import datetime, timezone
 
@@ -21,7 +26,10 @@ def _describe_exc(e: Exception) -> str:
     return str(e) or type(e).__name__
 
 
-MIGRATION_ORDER = ["organizations", "locations", "assets", "jobplans", "workorders"]
+MIGRATION_ORDER = [
+    "organizations", "persons", "crafts", "labor", "locations", "assets",
+    "meters", "workorders", "meterreadings", "locationmeterreadings", "jobplans", "pm",
+]
 # تسمية الأنواع (بالعربي والإنجليزي) مسؤولية الواجهة الأمامية بالكامل -
 # الباك إند بيرجع بس المفاتيح التقنية (زي "assets")، عشان تبديل اللغة
 # يكون قرار واجهة بحت من غير أي تكرار للترجمة في مكانين
@@ -86,8 +94,45 @@ def map_jobplan(m: dict) -> dict:
     }
 
 
+def map_labor(m: dict) -> dict:
+    # personid/craft_code بقوا مبعوتين فعليًا دلوقتي بما إن الأشخاص
+    # والحرف بيتنقلوا قبل العمالة في الترتيب - لو الشخص/الحرفة المشار
+    # ليهم لسه مش موجودين لأي سبب، هيفشل السجل ده بس ويظهر في التقرير
+    return {
+        "laborcode": m.get("laborcode"),
+        "personid": m.get("personid") or None,
+        "craft_code": m.get("craft") or None,
+        "site_id": m.get("siteid"),
+        "org_id": m.get("orgid"),
+        "status": m.get("status") or "ACTIVE",
+        # اسم الحقل ده تخمين لسه محتاج تأكيد (payrate/actrate بيختلف
+        # حسب النسخة) - لو غلط هيظهر واضح كـ "فشل" مش هيوقف باقي السجلات
+        "actual_rate": m.get("payrate") or m.get("actrate"),
+    }
+
+
+def map_pm(m: dict) -> dict:
+    return {
+        "pmnum": m.get("pmnum"),
+        "description": m.get("description") or m.get("pmnum"),
+        "status": m.get("status") or "ACTIVE",
+        "org_id": m.get("orgid"),
+        "site_id": m.get("siteid"),
+        "assetnum": m.get("assetnum") or None,
+        "location": m.get("location") or None,
+        "asset_loc": m.get("location") or None,
+        "worktype": m.get("worktype") or "PM",
+        "priority": m.get("priority") or 3,
+        "jpnum": m.get("jpnum") or None,
+    }
+
+
 def map_workorder(m: dict) -> dict:
-    payload = {
+    # عمدًا مبنبعتش jpnum هنا - أوامر الشغل بتتنقل قبل خطط العمل في الترتيب
+    # المطلوب، فأي ربط بخطة لسه مش موجودة في تكنورا هيفشل بمخالفة مفتاح
+    # خارجي. لو محتاج الربط ده لاحقًا، يحتاج "مرحلة تحديث" منفصلة بعد ما
+    # خطط العمل تتنقل، مش جزء من النسخة الحالية.
+    return {
         "wonum": m.get("wonum"),
         "site_id": m.get("siteid"),
         "org_id": m.get("orgid"),
@@ -102,9 +147,77 @@ def map_workorder(m: dict) -> dict:
         "reporteddate": m.get("reportdate") or m.get("reporteddate"),
         "reportedby": m.get("reportedby"),
     }
-    if m.get("jpnum"):
-        payload["jpnum"] = m.get("jpnum")
-    return payload
+
+
+def map_person(m: dict) -> dict:
+    return {
+        "personid": m.get("personid"),
+        "displayname": m.get("displayname") or m.get("personid"),
+        "firstname": m.get("firstname"),
+        "lastname": m.get("lastname"),
+        "status": m.get("status") or "ACTIVE",
+        "title": m.get("title"),
+        "department": m.get("department"),
+        "email": m.get("primaryemail") or m.get("email"),
+        "phone": m.get("phone"),
+    }
+
+
+def map_craft(m: dict) -> dict:
+    return {
+        "craft_code": m.get("craft"),
+        "description": m.get("description") or m.get("craft"),
+        "site_id": m.get("siteid"),
+        "org_id": m.get("orgid"),
+    }
+
+
+def map_meter(m: dict) -> dict:
+    return {
+        "meter_num": m.get("metername"),
+        "meter_name": m.get("metername"),
+        "meter_type": m.get("metertype") or "GAUGE",
+        "description": m.get("description") or m.get("metername"),
+        "unit_of_measure": m.get("uom"),
+    }
+
+
+def map_meter_reading(m: dict) -> dict:
+    return {
+        "asset_num": m.get("assetnum"),
+        "meter_num": m.get("metername"),
+        "reading_value": m.get("reading") or m.get("newreading"),
+        "reading_date": m.get("readingdate"),
+    }
+
+
+def map_location_meter_reading(m: dict) -> dict:
+    return {
+        "location_id": m.get("location"),
+        "meter_num": m.get("metername"),
+        "reading_value": m.get("lastreading") or m.get("reading") or m.get("newreading"),
+        "reading_date": m.get("lastreadingdate") or m.get("readingdate"),
+    }
+
+
+# جدول واحد بيربط كل نوع بـ: اسم Object Structure في Maximo (None يعني
+# دالة جلب خاصة، شوف organizations)، اسم الحقل المرجعي للتقرير (من بيانات
+# Maximo الخام قبل التحويل)، دالة التحويل لحقول تكنورا، واسم دالة الحفظ
+# المقابلة في TeknoraClient
+TYPE_SPECS = {
+    "organizations": {"os": None, "count_os": "mxorganization", "ref": "org_id", "map": map_organization, "save": "save_organization"},
+    "persons": {"os": "mxperson", "ref": "personid", "map": map_person, "save": "save_person"},
+    "crafts": {"os": "mxcraft", "ref": "craft", "map": map_craft, "save": "save_craft"},
+    "labor": {"os": "mxlabor", "ref": "laborcode", "map": map_labor, "save": "save_labor"},
+    "locations": {"os": "mxoperloc", "ref": "location", "map": map_location, "save": "save_location"},
+    "assets": {"os": "mxasset", "ref": "assetnum", "map": map_asset, "save": "save_asset"},
+    "meters": {"os": "oslcmeter", "ref": "metername", "map": map_meter, "save": "save_meter"},
+    "workorders": {"os": "mxwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder"},
+    "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
+    "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
+    "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan"},
+    "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm"},
+}
 
 
 class MigrationRun:
@@ -156,19 +269,12 @@ class MigrationRun:
             self.state["finished_at"] = datetime.now(timezone.utc).isoformat()
 
     async def _migrate_type(self, type_key: str, client: httpx.AsyncClient):
+        spec = TYPE_SPECS[type_key]
         try:
-            if type_key == "organizations":
+            if spec["os"] is None:
                 records = await self.maximo.get_organizations_with_sites()
-            elif type_key == "locations":
-                records = await self.maximo.query_all("mxoperloc")
-            elif type_key == "assets":
-                records = await self.maximo.query_all("mxasset")
-            elif type_key == "jobplans":
-                records = await self.maximo.query_all("mxjobplan")
-            elif type_key == "workorders":
-                records = await self.maximo.query_all("mxwo")
             else:
-                records = []
+                records = await self.maximo.query_all(spec["os"])
         except Exception as e:
             self._init_type(type_key, 0)
             self.state["types"][type_key]["failures"].append({
@@ -177,25 +283,12 @@ class MigrationRun:
             return
 
         self._init_type(type_key, len(records))
+        save_fn = getattr(self.teknora, spec["save"])
 
         for r in records:
-            ref = None
+            ref = r.get(spec["ref"])
             try:
-                if type_key == "organizations":
-                    ref = r.get("org_id")
-                    await self.teknora.save_organization(client, map_organization(r))
-                elif type_key == "locations":
-                    ref = r.get("location")
-                    await self.teknora.save_location(client, map_location(r))
-                elif type_key == "assets":
-                    ref = r.get("assetnum")
-                    await self.teknora.save_asset(client, map_asset(r))
-                elif type_key == "jobplans":
-                    ref = r.get("jpnum")
-                    await self.teknora.save_jobplan(client, map_jobplan(r))
-                elif type_key == "workorders":
-                    ref = r.get("wonum")
-                    await self.teknora.save_workorder(client, map_workorder(r))
+                await save_fn(client, spec["map"](r))
                 self._record_result(type_key, ref)
             except Exception as e:
                 self._record_result(type_key, ref, _describe_exc(e))

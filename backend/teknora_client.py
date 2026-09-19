@@ -62,5 +62,26 @@ class TeknoraClient:
     async def save_jobplan(self, client: httpx.AsyncClient, jp: dict) -> dict:
         return await self._post(client, "/jobplans/save", jp)
 
+    async def save_labor(self, client: httpx.AsyncClient, labor: dict) -> dict:
+        return await self._post(client, "/labor/save", labor)
+
+    async def save_pm(self, client: httpx.AsyncClient, pm: dict) -> dict:
+        return await self._post(client, "/pm/save", pm)
+
     async def save_workorder(self, client: httpx.AsyncClient, wo: dict) -> dict:
         return await self._post(client, "/workorder/save", wo)
+
+    async def save_person(self, client: httpx.AsyncClient, person: dict) -> dict:
+        return await self._post(client, "/person/save", person)
+
+    async def save_craft(self, client: httpx.AsyncClient, craft: dict) -> dict:
+        return await self._post(client, "/crafts/save", craft)
+
+    async def save_meter(self, client: httpx.AsyncClient, meter: dict) -> dict:
+        return await self._post(client, "/meters/save", meter)
+
+    async def save_meter_reading(self, client: httpx.AsyncClient, reading: dict) -> dict:
+        return await self._post(client, "/meter-readings/save", reading)
+
+    async def save_location_meter_reading(self, client: httpx.AsyncClient, reading: dict) -> dict:
+        return await self._post(client, "/locmeter-readings/save", reading)

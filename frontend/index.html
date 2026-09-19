@@ -319,9 +319,16 @@
 <script>
 const ICONS = {
   organizations: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9v.01"/><path d="M9 12v.01"/><path d="M9 15v.01"/><path d="M9 18v.01"/></svg>',
+  persons: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6"/><path d="M23 11h-6"/></svg>',
+  crafts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
   locations: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>',
   assets: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+  labor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  meters: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"/><path d="M12 12l4-2"/><path d="M12 5v1"/></svg>',
+  meterreadings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.1-2.8-2.8L7 14"/></svg>',
+  locationmeterreadings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><path d="M9 10l2 2 4-4"/></svg>',
   jobplans: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="15" y2="16"/></svg>',
+  pm: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
   workorders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
 };
 
@@ -349,7 +356,7 @@ const I18N = {
     fatal_error_prefix: 'خطأ عام أوقف العملية: ',
     select_one_alert: 'اختار نوع بيانات واحد على الأقل',
     start_failed_alert: 'فشل بدء النقل',
-    types: { organizations: 'المنظمات والمواقع (Sites)', locations: 'المواقع (Locations)', assets: 'الأصول (Assets)', jobplans: 'خطط العمل (Job Plans)', workorders: 'أوامر الشغل (Work Orders)' },
+    types: { organizations: 'المنظمات والمواقع (Sites)', persons: 'الأشخاص (Persons)', crafts: 'الحرف (Crafts)', locations: 'المواقع (Locations)', assets: 'الأصول (Assets)', labor: 'العمالة (Labor)', meters: 'العدادات (Meters)', jobplans: 'خطط العمل (Job Plans)', pm: 'الصيانة الوقائية (PM)', workorders: 'أوامر الشغل (Work Orders)', meterreadings: 'قراءات عدادات الأصول التاريخية', locationmeterreadings: 'قراءات عدادات المواقع التاريخية' },
   },
   en: {
     app_title: 'Data Migration Tool', app_subtitle: 'IBM Maximo → Teknora',
@@ -374,7 +381,7 @@ const I18N = {
     fatal_error_prefix: 'A general error stopped the process: ',
     select_one_alert: 'Select at least one data type',
     start_failed_alert: 'Failed to start migration',
-    types: { organizations: 'Organizations & Sites', locations: 'Locations', assets: 'Assets', jobplans: 'Job Plans', workorders: 'Work Orders' },
+    types: { organizations: 'Organizations & Sites', persons: 'Persons', crafts: 'Crafts', locations: 'Locations', assets: 'Assets', labor: 'Labor', meters: 'Meters', jobplans: 'Job Plans', pm: 'Preventive Maintenance', workorders: 'Work Orders', meterreadings: 'Historical Asset Meter Readings', locationmeterreadings: 'Historical Location Meter Readings' },
   },
 };
 
