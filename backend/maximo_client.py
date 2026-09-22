@@ -25,6 +25,15 @@ def _strip_spi_prefix(d: dict) -> dict:
     return {k.split(":", 1)[-1]: v for k, v in d.items() if isinstance(k, str)}
 
 
+def _raise_for_status(res: httpx.Response) -> None:
+    """زي _raise_for_status(res) بالظبط، بس بيحط رسالة Maximo الحقيقية
+    (زي BMXAA...) في نص الاستثناء - httpx.HTTPStatusError الأصلية
+    بترجع بس "Client error '400 Bad Request' for url ...' من غير محتوى
+    الرد، وده مش كافي نشخّص بيه أي مشكلة فعلية."""
+    if res.status_code >= 400:
+        raise Exception(f"HTTP {res.status_code}: {res.text[:400]}")
+
+
 class MaximoClient:
     def __init__(self, base_url: str, username: str, password: str):
         # base_url المتوقع من غير / في الآخر، وشامل /maximo (زي
@@ -60,7 +69,7 @@ class MaximoClient:
             while next_url and next_url not in seen_urls:
                 seen_urls.add(next_url)
                 res = await client.get(next_url, params=next_params, headers=self._headers())
-                res.raise_for_status()
+                _raise_for_status(res)
                 data = res.json()
                 refs = data.get("member") or data.get("rdfs:member") or []
                 member_refs.extend(refs)
@@ -95,7 +104,7 @@ class MaximoClient:
                         f"{self.base_url}/oslc/os/{object_structure}/{record_id}",
                         headers=self._headers(),
                     )
-                    detail_res.raise_for_status()
+                    _raise_for_status(detail_res)
                     results[i] = _strip_spi_prefix(detail_res.json())
 
             await asyncio.gather(*[fetch_one(i, ref) for i, ref in enumerate(member_refs)])
@@ -113,7 +122,7 @@ class MaximoClient:
                 params=params,
                 headers=self._headers(),
             )
-            res.raise_for_status()
+            _raise_for_status(res)
             data = res.json()
             members = data.get("member") or data.get("rdfs:member") or []
             return len(members)
