@@ -69,7 +69,7 @@ python -m uvicorn main:app --reload --port 8800
 | أوامر الشغل | `mxwo` | ✅ متأكد فعليًا |
 | خطط العمل | `mxapijobplan` | ✅ متأكد فعليًا (لاحظ بادئة "MXAPI" مش "MX") |
 | الصيانة الوقائية | `mxapipm` | ✅ متأكد فعليًا (نفس نمط "MXAPI") |
-| قراءات عدادات الأصول التاريخية | `mxmeterdata` | ✅ الاسم متأكد ("Meter Reading Definition")، بس حقول السجل نفسه (assetnum/metername/reading/readingdate) تخمين مبني على تسمية Maximo القياسية |
+| قراءات عدادات الأصول التاريخية | `oslcassetmeter` | ✅ الاسم متأكد فعليًا ("Oslc Asset Meter", Consumed By: OSLC) - كان في البداية `mxmeterdata` ("Meter Reading Definition")، بس ده Consumed By: INTEGRATION مش OSLC، فمبيظهرش في شاشة منح صلاحيات الـ Security Group (اللي بتعرض بس الـ Object Structures المصنّفة OSLC)، فاتغيّر لـ `oslcassetmeter` بدله. حقول السجل نفسه (assetnum/metername/reading/readingdate) لسه تخمين مبني على تسمية Maximo القياسية |
 | قراءات عدادات المواقع التاريخية | `oslclocationmeter` | ⚠️ الاسم اتلقى فعليًا ("Oslc Location Meter"، مُستهلك بواسطة OSLC، نفس نمط `oslcmeter`)، بس حقوله (location/metername/lastreading/lastreadingdate) لسه تخمين |
 | العدادات (الكتالوج) | `oslcmeter` | ⚠️ الاسم اتلقى فعليًا ("Oslc Meter Definition"، مُستهلك بواسطة OSLC)، بس حقوله (metername/metertype/uom) لسه تخمين |
 | العمالة | `mxlabor` | ⚠️ تخمين مبني على نفس نمط التسمية ("Labor Definition")، فيه بديل موجود اسمه `MXAPILABOR` لو ده غلط |
