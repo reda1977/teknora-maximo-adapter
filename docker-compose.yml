@@ -3,5 +3,7 @@ services:
     build: .
     container_name: maximo_migrator
     ports:
-      - "8800:8800"
+      # المضيف:الحاوية - 8800 داخل الحاوية زي ما هو، لكن على بورت 8000
+      # بره عشان 8800 محجوز بالفعل لـ Superset على نفس السيرفر
+      - "8000:8800"
     restart: unless-stopped
