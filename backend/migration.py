@@ -12,6 +12,7 @@ Meters -> Work Orders -> Meter Readings -> Job Plans -> PM
 ربط jpnum في أمر الشغل وقتها (الخطة لسه مش موجودة في تكنورا) - نفس مبدأ
 عدم إرسال حقول لسه مفيش بيانات حقيقية ليها بدل ما نخمّن ونفشل.
 """
+import asyncio
 from datetime import datetime, timezone
 
 import httpx
@@ -36,8 +37,12 @@ MIGRATION_ORDER = [
 
 
 def map_organization(o: dict) -> dict:
+    # /organizations/save بيقرا "orgid" (من غير underscore) في المستوى
+    # الأعلى بس - اتأكدنا من كود الـ endpoint نفسه. لو بعتنا "org_id" زي
+    # باقي الأنواع، الطلب بيترفض بـ "Organization ID is required" رغم إن
+    # القيمة موجودة فعليًا (اللي حصل فعليًا مع كل الـ 7 منظمات)
     return {
-        "org_id": o.get("org_id"),
+        "orgid": o.get("org_id"),
         "description": o.get("description") or o.get("org_id"),
         "itemsetid": "SET1",
         "companysetid": "SET1",
@@ -84,13 +89,36 @@ def map_asset(m: dict) -> dict:
     }
 
 
+def _strip_spi(d: dict) -> dict:
+    return {k.split(":", 1)[-1]: v for k, v in d.items() if isinstance(k, str)} if isinstance(d, dict) else {}
+
+
 def map_jobplan(m: dict) -> dict:
+    # /jobplans/save بيقبل مصفوفة "tasks" في نفس الطلب وبيعمل لها sync
+    # كامل (مسح القديم وإضافة الجديد) - اتأكدنا من كود الـ endpoint نفسه.
+    # الحقول جوه كل عنصر لازم تطابق أعمدة JPTask (task_sequence, description,
+    # nested_jpnum, duration, meternum) - jpnum بيتضاف تلقائي من السيرفر
+    # نفسه فمش لازم نبعته جوه كل task.
+    # ملحوظة: labor/materials/services/tools ممكن تتبعت بنفس الطريقة، لكن
+    # MXAPIJOBPLAN في النسخة دي من ماكسيمو بتعرض بس JOBTASK و JPASSETSPLIN
+    # كـ Source Objects فرعية (اتأكدنا من شاشة Object Structures نفسها) -
+    # يعني بيانات العمالة مش متاحة أصلاً من الـ Object Structure ده، محتاجة
+    # تعديل إداري في ماكسيمو (إضافة JOBLABOR كـ child) لو مطلوبة لاحقًا
+    tasks = []
+    for t in (m.get("jobtask") or []):
+        t = _strip_spi(t)
+        tasks.append({
+            "task_sequence": t.get("sequence") or t.get("tasknum"),
+            "description": t.get("description"),
+            "duration": t.get("duration"),
+        })
     return {
         "jpnum": m.get("jpnum"),
         "description": m.get("description") or m.get("jpnum"),
         "status": m.get("status") or "ACTIVE",
         "org_id": m.get("orgid"),
         "site_id": m.get("siteid"),
+        "tasks": tasks,
     }
 
 
@@ -112,6 +140,13 @@ def map_labor(m: dict) -> dict:
 
 
 def map_pm(m: dict) -> dict:
+    # /pm/save بيقبل "frequency" (dict أو list) وبيعمل sync كامل على جدول
+    # PMFrequency - اتأكدنا من كود الـ endpoint نفسه. حقلين التكرار في
+    # ماكسيمو (frequency/frequnit) موجودين كـ حقول مباشرة على سجل PM نفسه
+    # (مش object فرعي منفصل)، وأسماؤهم مطابقة تمامًا لأعمدة PMFrequency
+    frequency = None
+    if m.get("frequency") is not None or m.get("frequnit"):
+        frequency = {"frequency": m.get("frequency"), "frequnit": m.get("frequnit")}
     return {
         "pmnum": m.get("pmnum"),
         "description": m.get("description") or m.get("pmnum"),
@@ -124,6 +159,7 @@ def map_pm(m: dict) -> dict:
         "worktype": m.get("worktype") or "PM",
         "priority": m.get("priority") or 3,
         "jpnum": m.get("jpnum") or None,
+        "frequency": frequency,
     }
 
 
@@ -164,10 +200,13 @@ def map_person(m: dict) -> dict:
 
 
 def map_craft(m: dict) -> dict:
+    # مبنبعتش site_id عمدًا - الحرف (Crafts) في ماكسيمو مرتبطة بالـ
+    # Craft Set على مستوى المنظمة (Organization)، مش بموقع (Site) محدد.
+    # إرسال site_id فاضي كان بيخلي تكنورا يحط السجل على "Global" وهمي
+    # بيكراش لما تفتحه (Teknora bug تم اكتشافه فعليًا أثناء الاختبار)
     return {
         "craft_code": m.get("craft"),
         "description": m.get("description") or m.get("craft"),
-        "site_id": m.get("siteid"),
         "org_id": m.get("orgid"),
     }
 
@@ -271,10 +310,13 @@ class MigrationRun:
     async def _migrate_type(self, type_key: str, client: httpx.AsyncClient):
         spec = TYPE_SPECS[type_key]
         try:
+            # مهلة قصوى للجلب الأولي (5 دقايق) - لو حصل أي لوب أو تعليق غير
+            # متوقع في الاتصال بماكسيمو، النقل كله كان بيقف تمامًا من غير أي
+            # رسالة (زي اللي حصل فعليًا) بدل ما يفشل النوع ده بس ويكمل الباقي
             if spec["os"] is None:
-                records = await self.maximo.get_organizations_with_sites()
+                records = await asyncio.wait_for(self.maximo.get_organizations_with_sites(), timeout=300)
             else:
-                records = await self.maximo.query_all(spec["os"])
+                records = await asyncio.wait_for(self.maximo.query_all(spec["os"]), timeout=300)
         except Exception as e:
             self._init_type(type_key, 0)
             self.state["types"][type_key]["failures"].append({
