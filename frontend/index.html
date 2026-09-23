@@ -23,6 +23,24 @@
     --warn: #ffb648;
     --warn-soft: rgba(255,182,72,.12);
   }
+  :root[data-theme="light"] {
+    --bg: #f3f5fb;
+    --bg-2: #ffffff;
+    --panel: #ffffff;
+    --panel-2: #f0f3f9;
+    --border: #dbe2f0;
+    --text: #1a2332;
+    --text-dim: #5b6b8c;
+    --accent: #3b63e0;
+    --accent-2: #2e4fc4;
+    --accent-soft: rgba(59,99,224,.10);
+    --success: #1c9d64;
+    --success-soft: rgba(28,157,100,.10);
+    --danger: #e0435f;
+    --danger-soft: rgba(224,67,95,.08);
+    --warn: #c97f12;
+    --warn-soft: rgba(201,127,18,.10);
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
@@ -173,9 +191,14 @@
         <p data-i18n="app_subtitle">من IBM Maximo إلى تكنورا</p>
       </div>
     </div>
-    <div class="lang-toggle">
-      <button id="lang-ar" onclick="setLang('ar')">العربية</button>
-      <button id="lang-en" onclick="setLang('en')">English</button>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button class="secondary" id="theme-toggle" onclick="toggleTheme()" style="padding:9px 12px;" title="Light / dark">
+        <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <div class="lang-toggle">
+        <button id="lang-ar" onclick="setLang('ar')">العربية</button>
+        <button id="lang-en" onclick="setLang('en')">English</button>
+      </div>
     </div>
   </div>
 
@@ -268,10 +291,14 @@
       <div class="icon-badge">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
       </div>
-      <div>
+      <div style="flex:1">
         <h2 data-i18n="step3_title">الخطوة 3: اختار البيانات اللي عايز تنقلها</h2>
         <p data-i18n="step3_desc">الأنواع المكتشفة فعليًا في Maximo، مع عدد تقريبي لكل واحد</p>
       </div>
+      <button class="secondary" onclick="loadSummary()" id="btn-refresh-summary" style="padding:9px 14px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        <span data-i18n="refresh_btn">تحديث</span>
+      </button>
     </div>
     <div class="type-list" id="type-list"></div>
     <button class="primary" onclick="startMigration()" id="btn-start">
@@ -345,7 +372,7 @@ const I18N = {
     tek_url_label: 'رابط API تكنورا (شامل /api)',
     username_label: 'اليوزرنيم', username_email_label: 'اليوزرنيم / الإيميل', password_label: 'الباسورد',
     connect_btn: 'اتصال واستمرار', connecting_btn: 'جاري الاتصال...',
-    start_migration_btn: 'ابدأ النقل', new_migration_btn: 'نقل جديد',
+    start_migration_btn: 'ابدأ النقل', new_migration_btn: 'نقل جديد', refresh_btn: 'تحديث',
     counts_hint: 'الأعداد دي تقريبية (استعلام سريع من غير جلب تفاصيل كل سجل).',
     loading_counts: 'جاري جلب الأعداد من Maximo...',
     records_suffix: 'سجل', error_prefix: 'خطأ: ',
@@ -370,7 +397,7 @@ const I18N = {
     tek_url_label: 'Teknora API URL (including /api)',
     username_label: 'Username', username_email_label: 'Username / Email', password_label: 'Password',
     connect_btn: 'Connect & Continue', connecting_btn: 'Connecting...',
-    start_migration_btn: 'Start Migration', new_migration_btn: 'New Migration',
+    start_migration_btn: 'Start Migration', new_migration_btn: 'New Migration', refresh_btn: 'Refresh',
     counts_hint: 'These counts are approximate (a quick query, without fetching every record in full).',
     loading_counts: 'Fetching counts from Maximo...',
     records_suffix: 'records', error_prefix: 'Error: ',
@@ -402,6 +429,20 @@ function setLang(lang) {
     if (I18N[lang][key]) el.textContent = I18N[lang][key];
   });
   try { localStorage.setItem('migrator-lang', lang); } catch (e) {}
+}
+
+const MOON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+const SUN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  document.getElementById('theme-icon').outerHTML = (theme === 'light' ? SUN_ICON : MOON_ICON).replace('<svg', '<svg id="theme-icon"');
+  try { localStorage.setItem('migrator-theme', theme); } catch (e) {}
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  setTheme(current === 'light' ? 'dark' : 'light');
 }
 
 function showStep(n) {
@@ -590,6 +631,9 @@ function renderReport(state) {
   let saved = 'ar';
   try { saved = localStorage.getItem('migrator-lang') || 'ar'; } catch (e) {}
   setLang(saved);
+  let savedTheme = 'dark';
+  try { savedTheme = localStorage.getItem('migrator-theme') || 'dark'; } catch (e) {}
+  setTheme(savedTheme);
   showStep(1);
 })();
 </script>
