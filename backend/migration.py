@@ -247,10 +247,10 @@ def map_location_meter_reading(m: dict) -> dict:
 # المقابلة في TeknoraClient
 TYPE_SPECS = {
     "organizations": {"os": None, "count_os": "mxorganization", "ref": "org_id", "map": map_organization, "save": "save_organization"},
-    "persons": {"os": "mxperson", "ref": "personid", "map": map_person, "save": "save_person"},
+    "persons": {"os": "person_load", "ref": "personid", "map": map_person, "save": "save_person"},
     "crafts": {"os": "mxcraft", "ref": "craft", "map": map_craft, "save": "save_craft"},
-    "labor": {"os": "mxlabor", "ref": "laborcode", "map": map_labor, "save": "save_labor"},
-    "locations": {"os": "mxoperloc", "ref": "location", "map": map_location, "save": "save_location"},
+    "labor": {"os": "mxapilabor", "ref": "laborcode", "map": map_labor, "save": "save_labor"},
+    "locations": {"os": "mxapioperloc", "ref": "location", "map": map_location, "save": "save_location"},
     "assets": {"os": "mxasset", "ref": "assetnum", "map": map_asset, "save": "save_asset"},
     "meters": {"os": "oslcmeter", "ref": "metername", "map": map_meter, "save": "save_meter"},
     "workorders": {"os": "mxapiwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder"},
