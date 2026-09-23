@@ -66,7 +66,7 @@ python -m uvicorn main:app --reload --port 8800
 | الحرف | `mxcraft` | ✅ متأكد فعليًا |
 | المواقع الفرعية | `mxoperloc` | ✅ متأكد فعليًا |
 | الأصول | `mxasset` | ✅ متأكد فعليًا |
-| أوامر الشغل | `mxwo` | ✅ متأكد فعليًا |
+| أوامر الشغل | `mxapiwo` | ✅ اتغيّر من `mxwo` بناءً على تأكيد فعلي إنه بيرجع بيانات (نفس نمط "MXAPI" زي MXAPIJOBPLAN و MXAPIPM) |
 | خطط العمل | `mxapijobplan` | ✅ متأكد فعليًا (لاحظ بادئة "MXAPI" مش "MX") |
 | الصيانة الوقائية | `mxapipm` | ✅ متأكد فعليًا (نفس نمط "MXAPI") |
 | قراءات عدادات الأصول التاريخية | `mxmeterdata` | ✅ الاسم متأكد فعليًا ("Meter Reading Definition"). ده Consumed By: INTEGRATION مش OSLC، فمبيظهرش في شاشة فلترة منح صلاحيات الـ Security Group العادية (اللي بتعرض بس الـ Object Structures المصنّفة OSLC) - اتجرّب `oslcassetmeter` كبديل مؤقتًا، لكن اتأكد إن `mxmeterdata` ممكن يتمنح له صلاحية مباشرة برضه (لقيت طريقة تانية في شاشة الجروب)، فرجعنا له. حقول السجل نفسه (assetnum/metername/reading/readingdate) لسه تخمين مبني على تسمية Maximo القياسية |
