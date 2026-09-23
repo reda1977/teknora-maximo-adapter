@@ -37,8 +37,12 @@ MIGRATION_ORDER = [
 
 
 def map_organization(o: dict) -> dict:
+    # /organizations/save بيقرا "orgid" (من غير underscore) في المستوى
+    # الأعلى بس - اتأكدنا من كود الـ endpoint نفسه. لو بعتنا "org_id" زي
+    # باقي الأنواع، الطلب بيترفض بـ "Organization ID is required" رغم إن
+    # القيمة موجودة فعليًا (اللي حصل فعليًا مع كل الـ 7 منظمات)
     return {
-        "org_id": o.get("org_id"),
+        "orgid": o.get("org_id"),
         "description": o.get("description") or o.get("org_id"),
         "itemsetid": "SET1",
         "companysetid": "SET1",
@@ -85,13 +89,36 @@ def map_asset(m: dict) -> dict:
     }
 
 
+def _strip_spi(d: dict) -> dict:
+    return {k.split(":", 1)[-1]: v for k, v in d.items() if isinstance(k, str)} if isinstance(d, dict) else {}
+
+
 def map_jobplan(m: dict) -> dict:
+    # /jobplans/save بيقبل مصفوفة "tasks" في نفس الطلب وبيعمل لها sync
+    # كامل (مسح القديم وإضافة الجديد) - اتأكدنا من كود الـ endpoint نفسه.
+    # الحقول جوه كل عنصر لازم تطابق أعمدة JPTask (task_sequence, description,
+    # nested_jpnum, duration, meternum) - jpnum بيتضاف تلقائي من السيرفر
+    # نفسه فمش لازم نبعته جوه كل task.
+    # ملحوظة: labor/materials/services/tools ممكن تتبعت بنفس الطريقة، لكن
+    # MXAPIJOBPLAN في النسخة دي من ماكسيمو بتعرض بس JOBTASK و JPASSETSPLIN
+    # كـ Source Objects فرعية (اتأكدنا من شاشة Object Structures نفسها) -
+    # يعني بيانات العمالة مش متاحة أصلاً من الـ Object Structure ده، محتاجة
+    # تعديل إداري في ماكسيمو (إضافة JOBLABOR كـ child) لو مطلوبة لاحقًا
+    tasks = []
+    for t in (m.get("jobtask") or []):
+        t = _strip_spi(t)
+        tasks.append({
+            "task_sequence": t.get("sequence") or t.get("tasknum"),
+            "description": t.get("description"),
+            "duration": t.get("duration"),
+        })
     return {
         "jpnum": m.get("jpnum"),
         "description": m.get("description") or m.get("jpnum"),
         "status": m.get("status") or "ACTIVE",
         "org_id": m.get("orgid"),
         "site_id": m.get("siteid"),
+        "tasks": tasks,
     }
 
 
