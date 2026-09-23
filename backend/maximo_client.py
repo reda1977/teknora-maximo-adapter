@@ -77,6 +77,12 @@ class MaximoClient:
                 # بحث عن رابط الصفحة الجاية لو موجود (اسمه بيختلف حسب النسخة)
                 response_info = data.get("oslc:responseInfo") or data.get("responseInfo") or {}
                 next_page = response_info.get("oslc:nextPage") or response_info.get("nextPage")
+                # أحيانًا next_page بيرجع كـ object {"rdf:resource": "url"} بدل
+                # ما يكون string مباشر - لو سبناه dict كده، حفظه في set()
+                # هيرمي "unhashable type: 'dict'" (اللي حصل فعليًا مع المجموعات
+                # الكبيرة زي Crafts/Assets/JobPlans/PM اللي محتاجة أكتر من صفحة)
+                if isinstance(next_page, dict):
+                    next_page = next_page.get("rdf:resource") or next_page.get("href")
                 if next_page:
                     next_url = next_page
                     next_params = None
@@ -126,6 +132,19 @@ class MaximoClient:
             data = res.json()
             members = data.get("member") or data.get("rdfs:member") or []
             return len(members)
+
+    async def resolve_ref(self, ref: dict) -> dict:
+        """بعض الحقول في هياكل OSLC (زي "location" في oslclocationmeter)
+        بترجع كمرجع {"rdf:resource": "url"} لسجل تاني بدل ما ترجع القيمة
+        الفعلية جوّاها - محتاجين نتبع الرابط ده ونجيب السجل المرتبط عشان
+        ناخد منه القيمة الحقيقية (زي كود الموقع)."""
+        url = ref.get("rdf:resource") if isinstance(ref, dict) else None
+        if not url:
+            return {}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(url, headers=self._headers())
+            _raise_for_status(res)
+            return _strip_spi_prefix(res.json())
 
     async def get_organizations_with_sites(self) -> list:
         """بيرجع كل المنظمات، كل واحدة ومواقعها المتداخلة (site relationship
