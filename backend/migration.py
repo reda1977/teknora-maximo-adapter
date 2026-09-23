@@ -286,9 +286,25 @@ class MigrationRun:
         save_fn = getattr(self.teknora, spec["save"])
 
         for r in records:
+            # بعض الحقول (زي "location" في oslclocationmeter) بترجع كمرجع
+            # {"rdf:resource": "..."} لسجل تاني بدل القيمة الفعلية - لازم
+            # نتبعها ونستبدلها قبل التحويل، وإلا هترسل كـ dict لتكنورا
+            # وترجع 422 (اللي حصل فعليًا مع Historical Location Meter Readings)
+            for key in ("location", "assetnum", "asset"):
+                val = r.get(key)
+                if isinstance(val, dict) and "rdf:resource" in val:
+                    resolved = await self.maximo.resolve_ref(val)
+                    r[key] = resolved.get(key) or resolved.get("location") or resolved.get("assetnum")
+
             ref = r.get(spec["ref"])
             try:
                 await save_fn(client, spec["map"](r))
                 self._record_result(type_key, ref)
             except Exception as e:
-                self._record_result(type_key, ref, _describe_exc(e))
+                err = _describe_exc(e)
+                if not ref:
+                    # مفيش قيمة للحقل المرجعي - غالبًا اسم الحقل في map_* مش
+                    # مطابق للاسم الحقيقي في رد Maximo، فبنضيف مفاتيح السجل
+                    # الخام هنا عشان نشخّص الاسم الصح من غير تخمين تاني
+                    err += f" | مفاتيح Maximo المتاحة: {list(r.keys())}"
+                self._record_result(type_key, ref, err)

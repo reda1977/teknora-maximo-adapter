@@ -47,7 +47,10 @@ class TeknoraClient:
     async def _post(self, client: httpx.AsyncClient, path: str, payload: dict) -> dict:
         res = await client.post(f"{self.base_url}{path}", json=payload, headers=self._headers())
         if res.status_code >= 400:
-            raise Exception(f"HTTP {res.status_code}: {res.text[:300]}")
+            # ضيف اللي بعتناه فعليًا لتكنورا في رسالة الخطأ - عشان نقدر نقارن
+            # مباشرة بين اسم الحقل اللي استخدمناه ورسالة الرفض (زي "Organization
+            # ID is required" مع إننا بعتنا org_id) من غير تخمين اسم تاني أعمى
+            raise Exception(f"HTTP {res.status_code}: {res.text[:300]} | sent={str(payload)[:200]}")
         return res.json() if res.content else {}
 
     async def save_organization(self, client: httpx.AsyncClient, org: dict) -> dict:
