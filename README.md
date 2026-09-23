@@ -62,17 +62,17 @@ python -m uvicorn main:app --reload --port 8800
 | النوع | Object Structure | حالة التأكيد |
 |---|---|---|
 | المنظمات والمواقع | `mxorganization` | ✅ متأكد فعليًا |
-| الأشخاص | `mxperson` | ✅ متأكد فعليًا |
+| الأشخاص | `person_load` | ✅ اتغيّر من `mxperson` بناءً على تأكيد فعلي إنه بيرجع بيانات |
 | الحرف | `mxcraft` | ✅ متأكد فعليًا |
-| المواقع الفرعية | `mxoperloc` | ✅ متأكد فعليًا |
+| المواقع الفرعية | `mxapioperloc` | ✅ اتغيّر من `mxoperloc` بناءً على تأكيد فعلي إنه بيرجع بيانات (نفس نمط "MXAPI") |
 | الأصول | `mxasset` | ✅ متأكد فعليًا |
-| أوامر الشغل | `mxwo` | ✅ متأكد فعليًا |
+| أوامر الشغل | `mxapiwo` | ✅ اتغيّر من `mxwo` بناءً على تأكيد فعلي إنه بيرجع بيانات (نفس نمط "MXAPI" زي MXAPIJOBPLAN و MXAPIPM) |
 | خطط العمل | `mxapijobplan` | ✅ متأكد فعليًا (لاحظ بادئة "MXAPI" مش "MX") |
 | الصيانة الوقائية | `mxapipm` | ✅ متأكد فعليًا (نفس نمط "MXAPI") |
 | قراءات عدادات الأصول التاريخية | `mxmeterdata` | ✅ الاسم متأكد فعليًا ("Meter Reading Definition"). ده Consumed By: INTEGRATION مش OSLC، فمبيظهرش في شاشة فلترة منح صلاحيات الـ Security Group العادية (اللي بتعرض بس الـ Object Structures المصنّفة OSLC) - اتجرّب `oslcassetmeter` كبديل مؤقتًا، لكن اتأكد إن `mxmeterdata` ممكن يتمنح له صلاحية مباشرة برضه (لقيت طريقة تانية في شاشة الجروب)، فرجعنا له. حقول السجل نفسه (assetnum/metername/reading/readingdate) لسه تخمين مبني على تسمية Maximo القياسية |
 | قراءات عدادات المواقع التاريخية | `oslclocationmeter` | ⚠️ الاسم اتلقى فعليًا ("Oslc Location Meter"، مُستهلك بواسطة OSLC، نفس نمط `oslcmeter`)، بس حقوله (location/metername/lastreading/lastreadingdate) لسه تخمين |
 | العدادات (الكتالوج) | `oslcmeter` | ⚠️ الاسم اتلقى فعليًا ("Oslc Meter Definition"، مُستهلك بواسطة OSLC)، بس حقوله (metername/metertype/uom) لسه تخمين |
-| العمالة | `mxlabor` | ⚠️ تخمين مبني على نفس نمط التسمية ("Labor Definition")، فيه بديل موجود اسمه `MXAPILABOR` لو ده غلط |
+| العمالة | `mxapilabor` | ✅ اتغيّر من `mxlabor` بناءً على تأكيد فعلي إنه بيرجع بيانات |
 
 لو أي اسم من دول اتغيّر أو غلط، هتلاقي رسالة الخطأ الحقيقية من Maximo
 (زي `BMXAA4216E - Unknown Object`) في تقرير النقل النهائي بدل ما الأداة
