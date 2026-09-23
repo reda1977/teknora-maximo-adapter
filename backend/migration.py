@@ -200,13 +200,15 @@ def map_person(m: dict) -> dict:
 
 
 def map_craft(m: dict) -> dict:
-    # مبنبعتش site_id عمدًا - الحرف (Crafts) في ماكسيمو مرتبطة بالـ
-    # Craft Set على مستوى المنظمة (Organization)، مش بموقع (Site) محدد.
-    # إرسال site_id فاضي كان بيخلي تكنورا يحط السجل على "Global" وهمي
-    # بيكراش لما تفتحه (Teknora bug تم اكتشافه فعليًا أثناء الاختبار)
+    # رجّعنا site_id تاني - الفرضية إن الحرف مرتبطة بالمنظمة بس (من غير
+    # site) كانت غلط، السكرين شوت الفعلي من ماكسيمو نفسه بيوضح إن الحرف
+    # في النسخة دي فعليًا ليها Siteid حقيقي (1001, 1002...) مش فاضي. ظهور
+    # "Global" وقت الاختبار الأول كان على الأرجح بسبب إن المنظمات والمواقع
+    # كانت لسه فاشلة (باج orgid/org_id) وقتها، مش بسبب site_id نفسه
     return {
         "craft_code": m.get("craft"),
         "description": m.get("description") or m.get("craft"),
+        "site_id": m.get("siteid"),
         "org_id": m.get("orgid"),
     }
 
