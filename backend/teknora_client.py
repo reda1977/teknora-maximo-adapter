@@ -46,6 +46,14 @@ class TeknoraClient:
 
     async def _post(self, client: httpx.AsyncClient, path: str, payload: dict) -> dict:
         res = await client.post(f"{self.base_url}{path}", json=payload, headers=self._headers())
+        if res.status_code == 401:
+            # التوكن بيتاخد مرة واحدة بس في أول الاتصال، ولو النقل كبير (زي
+            # 17811 أصل قبل PM فعليًا) بياخد وقت طويل يكفي إن التوكن ينتهي
+            # منتصف الطريق - كل حاجة بعده كانت بترفض بـ 401 "Could not
+            # validate credentials" من غير أي تفرقة عن خطأ بيانات حقيقي.
+            # نعيد تسجيل الدخول ونجرب مرة واحدة بس قبل ما نستسلم
+            await self.login()
+            res = await client.post(f"{self.base_url}{path}", json=payload, headers=self._headers())
         if res.status_code >= 400:
             # ضيف اللي بعتناه فعليًا لتكنورا في رسالة الخطأ - عشان نقدر نقارن
             # مباشرة بين اسم الحقل اللي استخدمناه ورسالة الرفض (زي "Organization
