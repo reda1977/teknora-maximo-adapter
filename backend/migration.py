@@ -312,13 +312,18 @@ class MigrationRun:
     async def _migrate_type(self, type_key: str, client: httpx.AsyncClient):
         spec = TYPE_SPECS[type_key]
         try:
-            # مهلة قصوى للجلب الأولي (5 دقايق) - لو حصل أي لوب أو تعليق غير
-            # متوقع في الاتصال بماكسيمو، النقل كله كان بيقف تمامًا من غير أي
-            # رسالة (زي اللي حصل فعليًا) بدل ما يفشل النوع ده بس ويكمل الباقي
+            # مهلة قصوى للجلب الأولي - لو حصل أي لوب أو تعليق غير متوقع في
+            # الاتصال بماكسيمو، النقل كله كان بيقف تمامًا من غير أي رسالة
+            # (زي اللي حصل فعليًا) بدل ما يفشل النوع ده بس ويكمل الباقي.
+            # 30 دقيقة (مش 5) لأن مجموعة كبيرة زي الأصول (~18 ألف سجل، كل
+            # واحد بيتجاب بطلب منفصل) بتاخد وقت طويل فعليًا وهي شغالة عادي -
+            # الـ 5 دقايق كانت قاصرة وبتوقف جلب ناجح بس بطيء (اتأكدنا فعليًا:
+            # نفس النوع كان بيرجع 17811 سجل بنجاح قبل ما نضيف المهلة القصيرة)
+            timeout_s = 1800
             if spec["os"] is None:
-                records = await asyncio.wait_for(self.maximo.get_organizations_with_sites(), timeout=300)
+                records = await asyncio.wait_for(self.maximo.get_organizations_with_sites(), timeout=timeout_s)
             else:
-                records = await asyncio.wait_for(self.maximo.query_all(spec["os"]), timeout=300)
+                records = await asyncio.wait_for(self.maximo.query_all(spec["os"]), timeout=timeout_s)
         except Exception as e:
             self._init_type(type_key, 0)
             self.state["types"][type_key]["failures"].append({
