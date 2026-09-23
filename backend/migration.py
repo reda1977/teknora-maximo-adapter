@@ -213,7 +213,7 @@ TYPE_SPECS = {
     "assets": {"os": "mxasset", "ref": "assetnum", "map": map_asset, "save": "save_asset"},
     "meters": {"os": "oslcmeter", "ref": "metername", "map": map_meter, "save": "save_meter"},
     "workorders": {"os": "mxwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder"},
-    "meterreadings": {"os": "oslcassetmeter", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
+    "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
     "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan"},
     "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm"},
