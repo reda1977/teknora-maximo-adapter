@@ -12,6 +12,7 @@ Meters -> Work Orders -> Meter Readings -> Job Plans -> PM
 ربط jpnum في أمر الشغل وقتها (الخطة لسه مش موجودة في تكنورا) - نفس مبدأ
 عدم إرسال حقول لسه مفيش بيانات حقيقية ليها بدل ما نخمّن ونفشل.
 """
+import asyncio
 from datetime import datetime, timezone
 
 import httpx
@@ -164,10 +165,13 @@ def map_person(m: dict) -> dict:
 
 
 def map_craft(m: dict) -> dict:
+    # مبنبعتش site_id عمدًا - الحرف (Crafts) في ماكسيمو مرتبطة بالـ
+    # Craft Set على مستوى المنظمة (Organization)، مش بموقع (Site) محدد.
+    # إرسال site_id فاضي كان بيخلي تكنورا يحط السجل على "Global" وهمي
+    # بيكراش لما تفتحه (Teknora bug تم اكتشافه فعليًا أثناء الاختبار)
     return {
         "craft_code": m.get("craft"),
         "description": m.get("description") or m.get("craft"),
-        "site_id": m.get("siteid"),
         "org_id": m.get("orgid"),
     }
 
@@ -271,10 +275,13 @@ class MigrationRun:
     async def _migrate_type(self, type_key: str, client: httpx.AsyncClient):
         spec = TYPE_SPECS[type_key]
         try:
+            # مهلة قصوى للجلب الأولي (5 دقايق) - لو حصل أي لوب أو تعليق غير
+            # متوقع في الاتصال بماكسيمو، النقل كله كان بيقف تمامًا من غير أي
+            # رسالة (زي اللي حصل فعليًا) بدل ما يفشل النوع ده بس ويكمل الباقي
             if spec["os"] is None:
-                records = await self.maximo.get_organizations_with_sites()
+                records = await asyncio.wait_for(self.maximo.get_organizations_with_sites(), timeout=300)
             else:
-                records = await self.maximo.query_all(spec["os"])
+                records = await asyncio.wait_for(self.maximo.query_all(spec["os"]), timeout=300)
         except Exception as e:
             self._init_type(type_key, 0)
             self.state["types"][type_key]["failures"].append({

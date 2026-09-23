@@ -66,8 +66,14 @@ class MaximoClient:
             next_url = url
             next_params = params
             seen_urls = set()
-            while next_url and next_url not in seen_urls:
+            max_pages = 500  # سقف أمان يمنع أي لوب لا نهائي لو السيرفر رجّع
+                              # رابط صفحة جاية باستمرار (زي نفس الرابط بصيغة
+                              # مختلفة شوية) - 500 صفحة × 200 = 100 ألف سجل، أكتر
+                              # من كفاية لأي نوع بيانات حقيقي هنا
+            pages_fetched = 0
+            while next_url and next_url not in seen_urls and pages_fetched < max_pages:
                 seen_urls.add(next_url)
+                pages_fetched += 1
                 res = await client.get(next_url, params=next_params, headers=self._headers())
                 _raise_for_status(res)
                 data = res.json()
