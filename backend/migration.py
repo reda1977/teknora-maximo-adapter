@@ -140,6 +140,13 @@ def map_labor(m: dict) -> dict:
 
 
 def map_pm(m: dict) -> dict:
+    # /pm/save بيقبل "frequency" (dict أو list) وبيعمل sync كامل على جدول
+    # PMFrequency - اتأكدنا من كود الـ endpoint نفسه. حقلين التكرار في
+    # ماكسيمو (frequency/frequnit) موجودين كـ حقول مباشرة على سجل PM نفسه
+    # (مش object فرعي منفصل)، وأسماؤهم مطابقة تمامًا لأعمدة PMFrequency
+    frequency = None
+    if m.get("frequency") is not None or m.get("frequnit"):
+        frequency = {"frequency": m.get("frequency"), "frequnit": m.get("frequnit")}
     return {
         "pmnum": m.get("pmnum"),
         "description": m.get("description") or m.get("pmnum"),
@@ -152,6 +159,7 @@ def map_pm(m: dict) -> dict:
         "worktype": m.get("worktype") or "PM",
         "priority": m.get("priority") or 3,
         "jpnum": m.get("jpnum") or None,
+        "frequency": frequency,
     }
 
 
