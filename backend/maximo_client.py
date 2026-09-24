@@ -57,7 +57,7 @@ class MaximoClient:
         """بيرجع كل سجلات Object Structure معين كاملة (مش مجرد روابط)،
         مع دعم صفحات لو المجموعة كبيرة."""
         member_refs = []
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             url = f"{self.base_url}/oslc/os/{object_structure}"
             params = {"oslc.pageSize": str(page_size)}
             if where:
@@ -119,7 +119,16 @@ class MaximoClient:
                     _raise_for_status(detail_res)
                     results[i] = _strip_spi_prefix(detail_res.json())
 
-            await asyncio.gather(*[fetch_one(i, ref) for i, ref in enumerate(member_refs)])
+            # return_exceptions=True ضروري هنا - من غيرها لو طلب واحد بس فشل
+            # (تايم أوت عابر وسط آلاف الطلبات المتزامنة)، gather() كان
+            # بيرمي فورًا ويضيع كل السجلات التانية اللي اتجابت بنجاح فعلاً،
+            # فالنوع كله كان بيظهر total=0 رغم إن أغلبه اتجاب صح (اللي حصل
+            # فعليًا مع Work Orders - العدّاد بيرجع رقم حقيقي، لكن الجلب
+            # الكامل كان بيتصفّر لمجرد فشل طلب واحد وسط الآلاف)
+            outcomes = await asyncio.gather(*[fetch_one(i, ref) for i, ref in enumerate(member_refs)], return_exceptions=True)
+            failed_count = sum(1 for o in outcomes if isinstance(o, Exception))
+            if failed_count:
+                print(f"[maximo_client] {object_structure}: {failed_count} من {len(member_refs)} سجل فشل جلبهم الفردي وتم تجاهلهم")
             return [r for r in results if r]
 
     async def count_collection(self, object_structure: str, where: str = None) -> int:

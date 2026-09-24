@@ -64,7 +64,7 @@ python -m uvicorn main:app --reload --port 8800
 | المنظمات والمواقع | `mxorganization` | ✅ متأكد فعليًا |
 | الأشخاص | `person_load` | ✅ اتغيّر من `mxperson` بناءً على تأكيد فعلي إنه بيرجع بيانات |
 | الحرف | `mxcraft` | ✅ متأكد فعليًا |
-| المواقع الفرعية | `mxapioperloc` | ✅ اتغيّر من `mxoperloc` بناءً على تأكيد فعلي إنه بيرجع بيانات (نفس نمط "MXAPI") |
+| المواقع الفرعية | `mxoperloc` | ✅ متأكد فعليًا - **تحذير**: اتجرّب `mxapioperloc` بدلها مؤقتًا بس ده غلط؛ عنده Outbound/Inbound Processing Class مخصصة (`MoutOperLocProcess`/`MaxOperLocProcess`) خاصة بنقطة تكامل (Integration Framework)، وده بيرمي `iface#SKIP_TRANSACTION` عند أي محاولة قراءة OSLC عادية بيه - فشل `mxoperloc` الأصلي كان بس بسبب صلاحية READ (BMXAA0024E) اتصلحت من تاب Applications، مش مشكلة في الاسم نفسه |
 | الأصول | `mxasset` | ✅ متأكد فعليًا |
 | أوامر الشغل | `mxapiwo` | ✅ اتغيّر من `mxwo` بناءً على تأكيد فعلي إنه بيرجع بيانات (نفس نمط "MXAPI" زي MXAPIJOBPLAN و MXAPIPM) |
 | خطط العمل | `mxapijobplan` | ✅ متأكد فعليًا (لاحظ بادئة "MXAPI" مش "MX") |
