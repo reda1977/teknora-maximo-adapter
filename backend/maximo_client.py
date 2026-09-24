@@ -13,7 +13,10 @@
 - الإنشاء (POST) أحيانًا بيرجع 201 من غير أي محتوى - المعرّف بيجي في
   ترويسة Location بس، فمحتاجين نتبعها لو الـ body فاضي.
 """
+import asyncio
 import base64
+from contextlib import aclosing
+
 import httpx
 
 
@@ -52,18 +55,15 @@ class MaximoClient:
             if res.status_code != 200:
                 raise MaximoAuthError(f"فشل تسجيل الدخول لـ Maximo (كود {res.status_code}): {res.text[:300]}")
 
-    async def query_all(self, object_structure: str, where: str = None, page_size: int = 500,
-                         concurrency: int = 10, inline: bool = True) -> list:
-        """بيرجع كل سجلات Object Structure معين كاملة (مش مجرد روابط)،
-        مع دعم صفحات لو المجموعة كبيرة."""
-        member_refs = []
+    async def iter_pages(self, object_structure: str, where: str = None, order_by: str = None,
+                         page_size: int = 500, concurrency: int = 10, inline: bool = True):
+        """بيرجع السجلات صفحة بصفحة (async generator) بدل ما يحمّلها كلها في
+        الذاكرة الأول - ضروري لأوامر الشغل (22 مليون سجل) اللي بتتحفظ صفحة
+        بصفحة. لازم يتقفل بـ contextlib.aclosing لو المستهلك وقف بدري."""
         async with httpx.AsyncClient(timeout=60.0) as client:
-            url = f"{self.base_url}/oslc/os/{object_structure}"
             # oslc.select=* بيطلب البيانات كاملة جوه كل صفحة بدل روابط بس -
-            # الفرق ضخم: 200 سجل في طلب واحد بدل 200 طلب منفصل. لو السيرفر
-            # تجاهله ورجّع روابط بس، fetch_one تحت بيرجع للجلب الفردي تلقائي
-            # (سجل فيه rdf:resource لوحده). الجلب الفردي كان بطيء لدرجة إن
-            # Work Orders عدّت مهلة الـ 30 دقيقة
+            # 500 سجل في طلب واحد بدل 500 طلب منفصل. لو السيرفر تجاهله ورجّع
+            # روابط بس، _resolve_page بيرجع للجلب الفردي تلقائي.
             # inline=False للأنواع اللي محتاجة سجلات فرعية متداخلة (tasks جوه
             # job plan، sites جوه organization) - مش مضمون إن oslc.select=*
             # بيرجعها في كل نسخ ماكسيمو، والجلب الفردي مضمون إنه بيرجعها
@@ -72,16 +72,16 @@ class MaximoClient:
                 params["oslc.select"] = "*"
             if where:
                 params["oslc.where"] = where
+            if order_by:
+                params["oslc.orderBy"] = order_by
 
-            next_url = url
+            next_url = f"{self.base_url}/oslc/os/{object_structure}"
             next_params = params
             seen_urls = set()
-            # سقف أمان ضد اللوب اللا نهائي بس (seen_urls بيمسك التكرار الحرفي).
-            # كان 500 صفحة × 200 = 100 ألف سجل، وده كان هيقطع أي نوع أكبر
-            # (زي أوامر الشغل) بصمت - دلوقتي 2000 × 500 = مليون سجل، ولو
-            # اتوصله بيتسجل تحذير بدل ما يقطع من غير ما حد يعرف
+            # سقف أمان ضد اللوب اللا نهائي بس (seen_urls بيمسك التكرار الحرفي)
             max_pages = 2000
             pages_fetched = 0
+            sem = asyncio.Semaphore(concurrency)
             while next_url and next_url not in seen_urls and pages_fetched < max_pages:
                 seen_urls.add(next_url)
                 pages_fetched += 1
@@ -89,64 +89,62 @@ class MaximoClient:
                 _raise_for_status(res)
                 data = res.json()
                 refs = data.get("member") or data.get("rdfs:member") or []
-                member_refs.extend(refs)
 
-                # بحث عن رابط الصفحة الجاية لو موجود (اسمه بيختلف حسب النسخة)
                 response_info = data.get("oslc:responseInfo") or data.get("responseInfo") or {}
                 next_page = response_info.get("oslc:nextPage") or response_info.get("nextPage")
-                # أحيانًا next_page بيرجع كـ object {"rdf:resource": "url"} بدل
-                # ما يكون string مباشر - لو سبناه dict كده، حفظه في set()
-                # هيرمي "unhashable type: 'dict'" (اللي حصل فعليًا مع المجموعات
-                # الكبيرة زي Crafts/Assets/JobPlans/PM اللي محتاجة أكتر من صفحة)
+                # أحيانًا next_page بيرجع كـ {"rdf:resource": "url"} بدل string -
+                # لو اتساب dict، حفظه في set() بيرمي "unhashable type: 'dict'"
                 if isinstance(next_page, dict):
                     next_page = next_page.get("rdf:resource") or next_page.get("href")
-                if next_page:
-                    next_url = next_page
-                    next_params = None
-                else:
-                    next_url = None
+                next_url, next_params = (next_page, None) if next_page else (None, None)
+
+                yield await self._resolve_page(client, object_structure, refs, sem)
 
             if next_url and pages_fetched >= max_pages:
                 print(f"[maximo_client] {object_structure}: WARNING stopped at page cap "
-                      f"({max_pages} pages, {len(member_refs)} records) - more records exist")
+                      f"({max_pages} pages) - more records exist")
 
-            # نتبع كل رابط سجل عشان نجيب بياناته الكاملة (بحد أقصى للتزامن
-            # عشان منضربش السيرفر بيها كلها مرة واحدة)
-            import asyncio
-            sem = asyncio.Semaphore(concurrency)
-            results = [None] * len(member_refs)
+    async def _resolve_page(self, client: httpx.AsyncClient, object_structure: str, refs: list,
+                            sem: asyncio.Semaphore) -> list:
+        results = [None] * len(refs)
 
-            async def fetch_one(i, ref):
-                if not isinstance(ref, dict):
-                    return
-                if len(ref) > 1 or "rdf:resource" not in ref:
-                    results[i] = _strip_spi_prefix(ref)
-                    return
-                resource_url = ref.get("rdf:resource")
-                if not resource_url:
-                    return
-                record_id = resource_url.rstrip("/").split("/")[-1]
-                async with sem:
-                    detail_res = await client.get(
-                        f"{self.base_url}/oslc/os/{object_structure}/{record_id}",
-                        headers=self._headers(),
-                    )
-                    _raise_for_status(detail_res)
-                    results[i] = _strip_spi_prefix(detail_res.json())
+        async def fetch_one(i, ref):
+            if not isinstance(ref, dict):
+                return
+            if len(ref) > 1 or "rdf:resource" not in ref:
+                results[i] = _strip_spi_prefix(ref)
+                return
+            resource_url = ref.get("rdf:resource")
+            if not resource_url:
+                return
+            record_id = resource_url.rstrip("/").split("/")[-1]
+            async with sem:
+                detail_res = await client.get(
+                    f"{self.base_url}/oslc/os/{object_structure}/{record_id}",
+                    headers=self._headers(),
+                )
+                _raise_for_status(detail_res)
+                results[i] = _strip_spi_prefix(detail_res.json())
 
-            # return_exceptions=True ضروري هنا - من غيرها لو طلب واحد بس فشل
-            # (تايم أوت عابر وسط آلاف الطلبات المتزامنة)، gather() كان
-            # بيرمي فورًا ويضيع كل السجلات التانية اللي اتجابت بنجاح فعلاً،
-            # فالنوع كله كان بيظهر total=0 رغم إن أغلبه اتجاب صح (اللي حصل
-            # فعليًا مع Work Orders - العدّاد بيرجع رقم حقيقي، لكن الجلب
-            # الكامل كان بيتصفّر لمجرد فشل طلب واحد وسط الآلاف)
-            outcomes = await asyncio.gather(*[fetch_one(i, ref) for i, ref in enumerate(member_refs)], return_exceptions=True)
-            failed_count = sum(1 for o in outcomes if isinstance(o, Exception))
-            if failed_count:
-                # رسالة ASCII بس عمدًا - print بعربي بيكراش على أي console
-                # مش UTF-8 وبيوقع الجلب كله (اتكشف في اختبار محلي)
-                print(f"[maximo_client] {object_structure}: skipped {failed_count} of {len(member_refs)} records (detail fetch failed)")
-            return [r for r in results if r]
+        # return_exceptions=True ضروري - من غيرها فشل طلب واحد (تايم أوت عابر)
+        # بيرمي فورًا ويضيع كل السجلات التانية اللي اتجابت بنجاح
+        outcomes = await asyncio.gather(*[fetch_one(i, ref) for i, ref in enumerate(refs)],
+                                        return_exceptions=True)
+        failed_count = sum(1 for o in outcomes if isinstance(o, Exception))
+        if failed_count:
+            # ASCII بس عمدًا - print بعربي بيكراش على أي console مش UTF-8
+            print(f"[maximo_client] {object_structure}: skipped {failed_count} of {len(refs)} records (detail fetch failed)")
+        return [r for r in results if r]
+
+    async def query_all(self, object_structure: str, where: str = None, page_size: int = 500,
+                        concurrency: int = 10, inline: bool = True) -> list:
+        """كل السجلات مرة واحدة - للأنواع العادية الصغيرة نسبيًا."""
+        out = []
+        async with aclosing(self.iter_pages(object_structure, where=where, page_size=page_size,
+                                            concurrency=concurrency, inline=inline)) as pages:
+            async for page in pages:
+                out.extend(page)
+        return out
 
     async def count_collection(self, object_structure: str, where: str = None) -> int:
         """بيرجع عدد السجلات بسرعة (استعلام واحد بس، من غير ما نتبع كل

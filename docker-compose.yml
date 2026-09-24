@@ -6,4 +6,10 @@ services:
       # اتأكدنا فعليًا بـ "ss -tlnp" إن 8800 فاضي على السيرفر (اللي كان
       # متاخد هو 8088 - بورت Superset الافتراضي، مش 8800)
       - "8800:8800"
+    environment:
+      - MIGRATOR_DATA_DIR=/app/data
+    volumes:
+      # نقطة استكمال دفعات أوامر الشغل - لازم تعيش بعد أي rebuild للكونتينر،
+      # وإلا كل "docker compose up --build" هيرجّع النقل من أول سجل
+      - ./data:/app/data
     restart: unless-stopped

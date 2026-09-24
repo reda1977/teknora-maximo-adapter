@@ -141,6 +141,14 @@
   .type-row label { margin: 0; color: var(--text); font-weight: 700; font-size: 14px; cursor: pointer; }
   .type-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
   .type-count { color: var(--text-dim); font-size: 13px; font-weight: 600; }
+  .batch-info { margin-top: 8px; font-size: 12.5px; color: var(--text-dim); display: flex; flex-direction: column; gap: 6px; }
+  .batch-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .batch-size { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
+  .batch-size input { width: 110px; padding: 5px 8px; margin: 0; font-size: 13px; }
+  .link-btn { background: none; border: none; padding: 0; color: var(--accent); font-weight: 700; font-size: 12.5px; cursor: pointer; }
+  .link-btn:hover { text-decoration: underline; }
+  .batch-tag { color: var(--text-dim); font-weight: 600; font-size: 12px; }
+  .batch-done { margin-bottom: 16px; }
   .type-count.err { color: var(--danger); }
 
   .progress-row { margin-bottom: 20px; }
@@ -379,6 +387,14 @@ const I18N = {
     stats_template: (done,total,success,failed) => `${done} / ${total} (نجح ${success}، فشل ${failed})`,
     failures_title: (n) => `السجلات اللي فشلت (${n})`,
     summary_title: 'ملخص الأخطاء حسب السبب', th_count: 'العدد', th_example: 'مثال',
+    batch_note_new: 'بيتنقل على دفعات - الدفعة الأولى هتبدأ من أول أمر شغل',
+    batch_note_progress: (migrated, failed, batches, lastId) => `اتنقل لحد دلوقتي ${migrated} (فشل ${failed}) في ${batches} دفعة - الدفعة الجاية هتبدأ بعد ID ${lastId}`,
+    batch_size_label: 'حجم الدفعة',
+    batch_reset_btn: 'ابدأ من الأول',
+    batch_reset_confirm: 'الدفعة الجاية هتبدأ من أول أمر شغل تاني. اللي اتنقل قبل كده مش هيتمسح. متأكد؟',
+    batch_progress_label: (size, after) => after == null ? `(دفعة ${size} من البداية)` : `(دفعة ${size} بعد ID ${after})`,
+    batch_done_all: 'خلصت كل أوامر الشغل - مفيش دفعات تانية',
+    batch_more: 'الدفعة دي خلصت. شغّل النقل تاني عشان الدفعة الجاية تكمل من حيث وقفت',
     th_type: 'النوع', th_ref: 'المرجع', th_reason: 'سبب الفشل',
     all_success: 'كل السجلات اتنقلت بنجاح من غير أي فشل 🎉',
     fatal_error_prefix: 'خطأ عام أوقف العملية: ',
@@ -405,6 +421,14 @@ const I18N = {
     stats_template: (done,total,success,failed) => `${done} / ${total} (${success} ok, ${failed} failed)`,
     failures_title: (n) => `Failed records (${n})`,
     summary_title: 'Errors grouped by reason', th_count: 'Count', th_example: 'Example',
+    batch_note_new: 'Migrated in batches - the first batch starts from the first work order',
+    batch_note_progress: (migrated, failed, batches, lastId) => `${migrated} migrated so far (${failed} failed) in ${batches} batches - next batch starts after ID ${lastId}`,
+    batch_size_label: 'Batch size',
+    batch_reset_btn: 'Start over',
+    batch_reset_confirm: 'The next batch will start again from the first work order. Nothing already migrated is deleted. Continue?',
+    batch_progress_label: (size, after) => after == null ? `(batch of ${size} from the start)` : `(batch of ${size} after ID ${after})`,
+    batch_done_all: 'All work orders migrated - no batches left',
+    batch_more: 'This batch is done. Run the migration again to continue with the next batch from where it stopped',
     th_type: 'Type', th_ref: 'Reference', th_reason: 'Failure reason',
     all_success: 'All records migrated successfully with no failures 🎉',
     fatal_error_prefix: 'A general error stopped the process: ',
@@ -524,26 +548,61 @@ async function loadSummary() {
   for (const key of data.order) {
     const count = data.counts[key];
     const err = data.errors[key];
+    const batch = (data.batched || {})[key];
     const row = document.createElement('div');
     row.className = 'type-row';
     row.innerHTML = `
       <div class="left">
         <div class="type-icon">${iconSvg(key)}</div>
-        <label><input type="checkbox" value="${key}" ${err ? '' : 'checked'} ${err ? 'disabled' : ''}> ${t('types')[key]}</label>
+        <div>
+          <label><input type="checkbox" value="${key}" ${err ? '' : 'checked'} ${err ? 'disabled' : ''}> ${t('types')[key]}</label>
+          ${batch && !err ? batchInfoHtml(key, batch) : ''}
+        </div>
       </div>
-      <span class="type-count ${err ? 'err' : ''}">${err ? t('error_prefix') + err : (Number(count).toLocaleString('en-US') + ' ' + t('records_suffix'))}</span>
+      <span class="type-count ${err ? 'err' : ''}">${err ? t('error_prefix') + esc(err) : (fmt(count) + ' ' + t('records_suffix'))}</span>
     `;
     list.appendChild(row);
   }
+}
+
+function fmt(n) { return Number(n || 0).toLocaleString('en-US'); }
+
+function batchInfoHtml(key, batch) {
+  const cp = batch.checkpoint;
+  const note = cp
+    ? t('batch_note_progress')(fmt(cp.migrated), fmt(cp.failed), cp.batches || 0, cp.last_id)
+    : t('batch_note_new');
+  return `
+    <div class="batch-info">
+      <span>${note}</span>
+      <span class="batch-controls">
+        <label class="batch-size">${t('batch_size_label')}
+          <input type="number" id="batch-size" min="1000" step="1000" value="${batch.batch_size}" dir="ltr">
+        </label>
+        ${cp ? `<button type="button" class="link-btn" onclick="resetBatch('${key}')">${t('batch_reset_btn')}</button>` : ''}
+      </span>
+    </div>`;
+}
+
+async function resetBatch(key) {
+  if (!confirm(t('batch_reset_confirm'))) return;
+  const res = await fetch(API + '/api/checkpoints/' + key, { method: 'DELETE' });
+  const d = await res.json();
+  if (!res.ok) { alert(d.detail); return; }
+  loadSummary();
 }
 
 async function startMigration() {
   const checked = Array.from(document.querySelectorAll('#type-list input[type=checkbox]:checked')).map(c => c.value);
   if (checked.length === 0) { alert(t('select_one_alert')); return; }
 
+  const body = { types: checked };
+  const batchInput = document.getElementById('batch-size');
+  if (batchInput && Number(batchInput.value) > 0) body.batch_size = Number(batchInput.value);
+
   const res = await fetch(API + '/api/migrate/start', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ types: checked })
+    body: JSON.stringify(body)
   });
   if (!res.ok) { const d = await res.json(); alert(d.detail || t('start_failed_alert')); return; }
 
@@ -566,9 +625,9 @@ function renderProgress(state) {
       <div class="progress-head">
         <div class="left">
           <div class="type-icon">${iconSvg(key)}</div>
-          <span class="label">${t('types')[key]}</span>
+          <span class="label">${t('types')[key]}${tp.batch ? ` <span class="batch-tag">${t('batch_progress_label')(fmt(tp.batch.size), tp.batch.start_after)}</span>` : ''}</span>
         </div>
-        <span class="stats">${t('stats_template')(tp.done, tp.total, tp.success, tp.failed)}</span>
+        <span class="stats">${t('stats_template')(fmt(tp.done), fmt(tp.total), fmt(tp.success), fmt(tp.failed))}</span>
       </div>
       <div class="bar-track"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
     `;
@@ -624,6 +683,14 @@ function renderReport(state) {
   }
 
   failuresEl.innerHTML = '';
+  for (const key of state.order) {
+    const b = (state.types[key] || {}).batch;
+    if (!b) continue;
+    const note = document.createElement('div');
+    note.className = 'msg success batch-done';
+    note.innerHTML = `<span>${esc(t('types')[key])}: ${esc(b.finished_all ? t('batch_done_all') : t('batch_more'))}</span>`;
+    failuresEl.appendChild(note);
+  }
   if (state.fatal_error) {
     const msg = document.createElement('div');
     msg.className = 'msg error';
@@ -656,7 +723,7 @@ function renderReport(state) {
     html += '</tbody></table>';
     failuresEl.innerHTML += html;
   } else if (!state.fatal_error) {
-    failuresEl.innerHTML = `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>${t('all_success')}</div>`;
+    failuresEl.innerHTML += `<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>${t('all_success')}</div>`;
   }
 }
 
