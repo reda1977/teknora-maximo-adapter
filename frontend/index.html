@@ -378,6 +378,7 @@ const I18N = {
     records_suffix: 'سجل', error_prefix: 'خطأ: ',
     stats_template: (done,total,success,failed) => `${done} / ${total} (نجح ${success}، فشل ${failed})`,
     failures_title: (n) => `السجلات اللي فشلت (${n})`,
+    summary_title: 'ملخص الأخطاء حسب السبب', th_count: 'العدد', th_example: 'مثال',
     th_type: 'النوع', th_ref: 'المرجع', th_reason: 'سبب الفشل',
     all_success: 'كل السجلات اتنقلت بنجاح من غير أي فشل 🎉',
     fatal_error_prefix: 'خطأ عام أوقف العملية: ',
@@ -403,6 +404,7 @@ const I18N = {
     records_suffix: 'records', error_prefix: 'Error: ',
     stats_template: (done,total,success,failed) => `${done} / ${total} (${success} ok, ${failed} failed)`,
     failures_title: (n) => `Failed records (${n})`,
+    summary_title: 'Errors grouped by reason', th_count: 'Count', th_example: 'Example',
     th_type: 'Type', th_ref: 'Reference', th_reason: 'Failure reason',
     all_success: 'All records migrated successfully with no failures 🎉',
     fatal_error_prefix: 'A general error stopped the process: ',
@@ -529,7 +531,7 @@ async function loadSummary() {
         <div class="type-icon">${iconSvg(key)}</div>
         <label><input type="checkbox" value="${key}" ${err ? '' : 'checked'} ${err ? 'disabled' : ''}> ${t('types')[key]}</label>
       </div>
-      <span class="type-count ${err ? 'err' : ''}">${err ? t('error_prefix') + err : (count + ' ' + t('records_suffix'))}</span>
+      <span class="type-count ${err ? 'err' : ''}">${err ? t('error_prefix') + err : (Number(count).toLocaleString('en-US') + ' ' + t('records_suffix'))}</span>
     `;
     list.appendChild(row);
   }
@@ -584,6 +586,23 @@ async function pollProgress() {
   }
 }
 
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// بيشيل الأجزاء اللي بتتغير من سجل لسجل (الـ ID جوه "Key (x)=(...)"،
+// نص الـ SQL، والـ payload المبعوت) عشان الأخطاء المتطابقة تتجمع في سطر واحد
+function reasonKey(err) {
+  return String(err || '')
+    .split(' | sent=')[0]
+    .replace(/\[SQL:[\s\S]*$/, '')
+    .replace(/\(([^()]*)\)=\(([^()]*)\)/g, '($1)=(…)')
+    .replace(/\\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220);
+}
+
 function renderReport(state) {
   const summaryEl = document.getElementById('report-summary');
   const failuresEl = document.getElementById('report-failures');
@@ -614,10 +633,25 @@ function renderReport(state) {
   }
 
   if (allFailures.length > 0) {
-    let html = '<h3 style="font-size:15px;margin-bottom:10px;">' + t('failures_title')(allFailures.length) + '</h3>';
+    const groups = new Map();
+    for (const f of allFailures) {
+      const key = f.type + '\u0000' + reasonKey(f.error);
+      const g = groups.get(key) || { type: f.type, reason: reasonKey(f.error), count: 0, example: f.ref };
+      g.count++;
+      groups.set(key, g);
+    }
+    const sorted = [...groups.values()].sort((a, b) => b.count - a.count);
+    let html = '<h3 style="font-size:15px;margin-bottom:10px;">' + t('summary_title') + '</h3>';
+    html += `<table style="margin-bottom:26px"><thead><tr><th>${t('th_type')}</th><th>${t('th_count')}</th><th>${t('th_reason')}</th><th>${t('th_example')}</th></tr></thead><tbody>`;
+    for (const g of sorted) {
+      html += `<tr><td>${esc(g.type)}</td><td class="ref">${g.count.toLocaleString('en-US')}</td><td class="err">${esc(g.reason)}</td><td>${esc(g.example)}</td></tr>`;
+    }
+    html += '</tbody></table>';
+
+    html += '<h3 style="font-size:15px;margin-bottom:10px;">' + t('failures_title')(allFailures.length) + '</h3>';
     html += `<table><thead><tr><th>${t('th_type')}</th><th>${t('th_ref')}</th><th>${t('th_reason')}</th></tr></thead><tbody>`;
     for (const f of allFailures) {
-      html += `<tr><td>${f.type}</td><td class="ref">${f.ref}</td><td class="err">${f.error}</td></tr>`;
+      html += `<tr><td>${esc(f.type)}</td><td class="ref">${esc(f.ref)}</td><td class="err">${esc(f.error)}</td></tr>`;
     }
     html += '</tbody></table>';
     failuresEl.innerHTML += html;

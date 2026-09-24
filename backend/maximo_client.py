@@ -52,7 +52,7 @@ class MaximoClient:
             if res.status_code != 200:
                 raise MaximoAuthError(f"فشل تسجيل الدخول لـ Maximo (كود {res.status_code}): {res.text[:300]}")
 
-    async def query_all(self, object_structure: str, where: str = None, page_size: int = 200,
+    async def query_all(self, object_structure: str, where: str = None, page_size: int = 500,
                          concurrency: int = 10, inline: bool = True) -> list:
         """بيرجع كل سجلات Object Structure معين كاملة (مش مجرد روابط)،
         مع دعم صفحات لو المجموعة كبيرة."""
@@ -76,10 +76,11 @@ class MaximoClient:
             next_url = url
             next_params = params
             seen_urls = set()
-            max_pages = 500  # سقف أمان يمنع أي لوب لا نهائي لو السيرفر رجّع
-                              # رابط صفحة جاية باستمرار (زي نفس الرابط بصيغة
-                              # مختلفة شوية) - 500 صفحة × 200 = 100 ألف سجل، أكتر
-                              # من كفاية لأي نوع بيانات حقيقي هنا
+            # سقف أمان ضد اللوب اللا نهائي بس (seen_urls بيمسك التكرار الحرفي).
+            # كان 500 صفحة × 200 = 100 ألف سجل، وده كان هيقطع أي نوع أكبر
+            # (زي أوامر الشغل) بصمت - دلوقتي 2000 × 500 = مليون سجل، ولو
+            # اتوصله بيتسجل تحذير بدل ما يقطع من غير ما حد يعرف
+            max_pages = 2000
             pages_fetched = 0
             while next_url and next_url not in seen_urls and pages_fetched < max_pages:
                 seen_urls.add(next_url)
@@ -104,6 +105,10 @@ class MaximoClient:
                     next_params = None
                 else:
                     next_url = None
+
+            if next_url and pages_fetched >= max_pages:
+                print(f"[maximo_client] {object_structure}: WARNING stopped at page cap "
+                      f"({max_pages} pages, {len(member_refs)} records) - more records exist")
 
             # نتبع كل رابط سجل عشان نجيب بياناته الكاملة (بحد أقصى للتزامن
             # عشان منضربش السيرفر بيها كلها مرة واحدة)
@@ -147,14 +152,22 @@ class MaximoClient:
         """بيرجع عدد السجلات بسرعة (استعلام واحد بس، من غير ما نتبع كل
         رابط سجل) - مستخدمة في شاشة المعاينة قبل بدء النقل الفعلي."""
         async with httpx.AsyncClient(timeout=20.0) as client:
-            params = {"oslc.pageSize": "1000"}
-            if where:
-                params["oslc.where"] = where
-            res = await client.get(
-                f"{self.base_url}/oslc/os/{object_structure}",
-                params=params,
-                headers=self._headers(),
-            )
+            url = f"{self.base_url}/oslc/os/{object_structure}"
+            base = {"oslc.where": where} if where else {}
+
+            # collectioncount=1 بيرجع العدد الحقيقي الكامل في totalCount -
+            # الطريقة القديمة (عد أعضاء صفحة واحدة حجمها 1000) كانت بتقف عند
+            # 1000 لأي نوع أكبر، فمكناش نعرف إن أوامر الشغل مثلاً عشرات الآلاف
+            res = await client.get(url, params={**base, "oslc.pageSize": "1", "collectioncount": "1"},
+                                   headers=self._headers())
+            _raise_for_status(res)
+            data = res.json()
+            info = data.get("oslc:responseInfo") or data.get("responseInfo") or {}
+            total = info.get("oslc:totalCount", info.get("totalCount"))
+            if isinstance(total, int):
+                return total
+
+            res = await client.get(url, params={**base, "oslc.pageSize": "1000"}, headers=self._headers())
             _raise_for_status(res)
             data = res.json()
             members = data.get("member") or data.get("rdfs:member") or []
