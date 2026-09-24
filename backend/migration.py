@@ -66,7 +66,7 @@ def _describe_exc(e: Exception) -> str:
 
 MIGRATION_ORDER = [
     "organizations", "persons", "crafts", "labor", "locations", "assets",
-    "meters", "workorders", "meterreadings", "locationmeterreadings", "jobplans", "pm",
+    "meters", "workorders", "meterreadings", "locationmeterreadings", "jobplans", "pm", "pmsequences",
 ]
 # تسمية الأنواع (بالعربي والإنجليزي) مسؤولية الواجهة الأمامية بالكامل -
 # الباك إند بيرجع بس المفاتيح التقنية (زي "assets")، عشان تبديل اللغة
@@ -134,6 +134,23 @@ def map_asset(m: dict) -> dict:
         "install_date": m.get("installdate"),
         "warranty_exp_date": m.get("warrantyexpdate"),
     }
+
+
+def _find_sequence_list(d, depth: int = 0):
+    """قائمة السيكونس جوه رد GET /pm/{pmnum} من تكنورا - الاسم بالظبط مش
+    موثّق، فبندوّر على الأسماء المحتملة في المستوى الأول وجوه أي object
+    متداخل مستوى واحد (زي {"pm": {...}, "sequences": [...]})."""
+    if not isinstance(d, dict):
+        return None
+    for k in ("sequences", "pm_sequences", "pmsequences", "pmsequence", "sequence"):
+        if isinstance(d.get(k), list):
+            return d[k]
+    if depth == 0:
+        for v in d.values():
+            found = _find_sequence_list(v, depth=1)
+            if found is not None:
+                return found
+    return None
 
 
 def _strip_spi(d: dict) -> dict:
@@ -314,8 +331,15 @@ TYPE_SPECS = {
     # batch_key: أوامر الشغل 22 مليون سجل - بتتنقل على دفعات مرتبة بالـ
     # workorderid، كل دفعة بتبدأ بعد آخر ID اتحفظ (مش بعد رقم صفحة، عشان
     # الصفحات العميقة في جدول بالحجم ده بطيئة جدًا في ماكسيمو)
+    # select: الحقول اللي map_workorder بيستخدمها بس، مش "*" - أمر شغل واحد
+    # فيه حقل ليه class مكسور على سيرفر ماكسيمو (BMXAA4183E) كان بيوقع
+    # الصفحة كلها والدفعة كلها وراه (اللي حصل فعليًا بعد سجل 51,500)
     "workorders": {"os": "mxapiwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder",
-                   "batch_key": "workorderid"},
+                   "batch_key": "workorderid",
+                   "select": ",".join(f"spi:{f}" for f in (
+                       "workorderid", "wonum", "siteid", "orgid", "description", "worktype", "status",
+                       "assetnum", "location", "priority", "targstartdate", "targcompdate",
+                       "reportdate", "reportedby"))},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
     "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan", "inline": False},
@@ -323,6 +347,11 @@ TYPE_SPECS = {
     # (pmnum, siteid) قبل الحفظ
     "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm",
            "attach": {"os": "pmsequence_load", "key": "pmnum", "as": "_sequences", "label": "PM Sequences"}},
+    # خطوة مستقلة للسيكونس بس عشان تتجرب لوحدها: بتبعت الـ PM كامل (مش
+    # السيكونس لوحده، لأن /pm/save بيمسح التكرار ويصفّر الموقع لو مجوش في
+    # الطلب) لكن للـ PMs اللي ليها سيكونس بس، وبعدين بتقرا كل PM من تكنورا
+    # وتقارن العدد المتخزن بالمبعوت
+    "pmsequences": {"os": "pmsequence_load", "ref": "pmnum", "custom": "_migrate_pm_sequences"},
 }
 
 
@@ -368,7 +397,9 @@ class MigrationRun:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 for type_key in self.state["order"]:
                     self.state["current_type"] = type_key
-                    if TYPE_SPECS[type_key].get("batch_key"):
+                    if TYPE_SPECS[type_key].get("custom"):
+                        await getattr(self, TYPE_SPECS[type_key]["custom"])(type_key, client)
+                    elif TYPE_SPECS[type_key].get("batch_key"):
                         await self._migrate_batched(type_key, client)
                     else:
                         await self._migrate_type(type_key, client)
@@ -433,20 +464,71 @@ class MigrationRun:
         for r in records:
             await self._save_record(type_key, spec, save_fn, client, r)
 
-    async def _attach_children(self, type_key: str, attach: dict, records: list):
+    async def _migrate_pm_sequences(self, type_key: str, client: httpx.AsyncClient):
+        pm_spec = TYPE_SPECS["pm"]
+        attach = pm_spec["attach"]
+        self._init_type(type_key, 0)
+        st = self.state["types"][type_key]
+        try:
+            children = await asyncio.wait_for(self.maximo.query_all(attach["os"]), timeout=1800)
+            pms = await asyncio.wait_for(
+                self.maximo.query_all(pm_spec["os"], inline=pm_spec.get("inline", True)), timeout=1800)
+        except Exception as e:
+            reason = "عدّى 30 دقيقة" if isinstance(e, asyncio.TimeoutError) else _describe_exc(e)
+            st["failures"].append({"ref": "-", "error": f"تعذر جلب البيانات من Maximo: {reason}"})
+            return
+
+        await self._attach_children(type_key, attach, pms, children=children)
+        targets = [p for p in pms if p.get(attach["as"])]
+        st["total"] = len(targets)
+        st["summary"] = {"sequences_in_maximo": len(children), "pms_in_maximo": len(pms),
+                         "pms_with_sequences": len(targets)}
+
+        unverifiable_noted = False
+        for p in targets:
+            ref = p.get("pmnum")
+            payload = map_pm(p)
+            sent = len(payload["sequences"])
+            try:
+                await self.teknora.save_pm(client, payload)
+            except Exception as e:
+                self._record_result(type_key, ref, _describe_exc(e))
+                continue
+            try:
+                stored_pm = await self.teknora.get_pm(client, ref)
+            except Exception as e:
+                self._record_result(type_key, ref, f"الطلب اتقبل بس مقدرناش نقرا الـ PM من تكنورا نتأكد: {_describe_exc(e)}")
+                continue
+            stored = _find_sequence_list(stored_pm)
+            if stored is None:
+                # شكل رد GET /pm/{pmnum} مش معروف مسبقًا - لو ملقيناش قائمة
+                # سيكونس فيه، بنقول ده مرة واحدة بمفاتيح الرد الحقيقية بدل
+                # ما نحكم على السجل بتخمين
+                if not unverifiable_noted:
+                    keys = sorted(stored_pm.keys())[:30] if isinstance(stored_pm, dict) else type(stored_pm).__name__
+                    st["failures"].append({"ref": ref, "error": f"اتحفظ، بس رد تكنورا لـ GET /pm/{{pmnum}} مفيهوش قائمة سيكونس نقارن بيها - مفاتيح الرد: {keys}"})
+                    unverifiable_noted = True
+                self._record_result(type_key, ref)
+            elif len(stored) != sent:
+                self._record_result(type_key, ref, f"اتبعت {sent} سيكونس والطلب اتقبل، بس تكنورا متخزن فيه {len(stored)}")
+            else:
+                self._record_result(type_key, ref)
+
+    async def _attach_children(self, type_key: str, attach: dict, records: list, children: list = None):
         """بيجيب سجلات فرعية من Object Structure منفصل (زي PMSEQUENCE_LOAD)
         ويربطها بكل سجل أب بـ (key, siteid). siteid جزء من المفتاح لأن
         pmnum في ماكسيمو مميز جوه الـ site بس، مش على مستوى النظام كله."""
         key, target = attach["key"], attach["as"]
-        try:
-            children = await asyncio.wait_for(self.maximo.query_all(attach["os"]), timeout=1800)
-        except Exception as e:
-            reason = "عدّى 30 دقيقة" if isinstance(e, asyncio.TimeoutError) else _describe_exc(e)
-            # الأب بيتحفظ عادي من غير الفرعيات بدل ما النوع كله يقف
-            self.state["types"][type_key]["failures"].append({
-                "ref": "-", "error": f"تعذر جلب {attach['label']} من Maximo ({attach['os']}): {reason}"
-            })
-            return
+        if children is None:
+            try:
+                children = await asyncio.wait_for(self.maximo.query_all(attach["os"]), timeout=1800)
+            except Exception as e:
+                reason = "عدّى 30 دقيقة" if isinstance(e, asyncio.TimeoutError) else _describe_exc(e)
+                # الأب بيتحفظ عادي من غير الفرعيات بدل ما النوع كله يقف
+                self.state["types"][type_key]["failures"].append({
+                    "ref": "-", "error": f"تعذر جلب {attach['label']} من Maximo ({attach['os']}): {reason}"
+                })
+                return
 
         # الربط بـ (key, siteid) لو السجلات الفرعية راجعة بـ siteid، وإلا بـ
         # key لوحده - لو الـ Object Structure مش بيرجّع siteid، الربط بالزوج
@@ -477,17 +559,50 @@ class MigrationRun:
             self.state["types"][type_key]["failures"].append({"ref": "-", "error": note})
         print(f"[migration] {attach['os']}: {len(children)} children, attached to {matched} of {len(records)} records")
 
-    async def _fetch_page_with_retry(self, spec: dict, where: str, key: str, attempts: int = 3) -> list:
+    async def _fetch_page_with_retry(self, spec: dict, where: str, key: str, attempts: int = 3,
+                                     select: str = None, page_size: int = 500) -> list:
         """3 محاولات بانتظار متزايد (5ث، 15ث) - عطل عابر في صفحة واحدة
-        مينهيش الدفعة كلها. لو الـ 3 فشلوا الخطأ بيطلع في التقرير."""
+        مينهيش الدفعة كلها. لو الـ 3 فشلوا الخطأ بيطلع لفوق."""
         for attempt in range(attempts):
             try:
-                return await self.maximo.fetch_first_page(spec["os"], where=where, order_by=f"+spi:{key}",
-                                                          inline=spec.get("inline", True))
+                return await self.maximo.fetch_first_page(
+                    spec["os"], where=where, order_by=f"+spi:{key}", page_size=page_size,
+                    inline=spec.get("inline", True), select=select or spec.get("select"))
             except Exception:
                 if attempt == attempts - 1:
                     raise
                 await asyncio.sleep(5 * 3 ** attempt)
+
+    async def _fetch_next_page(self, spec: dict, key: str, last_id) -> tuple:
+        """(السجلات، [(id، سبب) للسجلات اللي ماكسيمو مش قادر يرجّعها]).
+        لو الصفحة فشلت حتى بعد المحاولات، بنجيب الـ IDs بس (حقل واحد سليم)
+        ونقسم الصفحة نصين نصين لحد ما نعزل السجل (أو السجلات) المكسورة -
+        سجل واحد مينفعش يوقف الـ 22 مليون كلهم."""
+        where = f"spi:{key}>{last_id}" if last_id is not None else None
+        try:
+            return await self._fetch_page_with_retry(spec, where, key), []
+        except Exception as e:
+            page_error = e
+
+        id_recs = await self._fetch_page_with_retry(spec, where, key, select=f"spi:{key}")
+        ids = [r.get(key) for r in id_recs if isinstance(r.get(key), (int, float))]
+        if not ids:
+            raise page_error
+        return await self._fetch_ids_bisect(spec, key, sorted(ids))
+
+    async def _fetch_ids_bisect(self, spec: dict, key: str, ids: list) -> tuple:
+        where = f"spi:{key}>={ids[0]} and spi:{key}<={ids[-1]}"
+        try:
+            recs = await self._fetch_page_with_retry(spec, where, key, page_size=len(ids),
+                                                     attempts=2 if len(ids) == 1 else 1)
+            return recs, []
+        except Exception as e:
+            if len(ids) == 1:
+                return [], [(ids[0], _describe_exc(e))]
+            mid = len(ids) // 2
+            left, bad_left = await self._fetch_ids_bisect(spec, key, ids[:mid])
+            right, bad_right = await self._fetch_ids_bisect(spec, key, ids[mid:])
+            return left + right, bad_left + bad_right
 
     async def _migrate_batched(self, type_key: str, client: httpx.AsyncClient):
         """دفعة واحدة (batch_size سجل) بتبدأ بعد آخر ID اتحفظ في المرة اللي
@@ -518,10 +633,8 @@ class MigrationRun:
             while fetched < self.batch_size:
                 # كل صفحة استعلام جديد "أول 500 بعد آخر ID" (keyset) - مفيش
                 # صفحات بعيدة خالص، فالطلب رقم 400 بنفس سرعة الأول
-                where = f"spi:{key}>{last_id}" if last_id is not None else None
-                page = await self._fetch_page_with_retry(spec, where, key)
-                page = page[: self.batch_size - fetched]
-                if not page:
+                page, bad = await self._fetch_next_page(spec, key, last_id)
+                if not page and not bad:
                     st["batch"]["finished_all"] = True
                     break
 
@@ -533,21 +646,27 @@ class MigrationRun:
                     # بصمت - نوقف بوضوح أحسن من فقد بيانات
                     raise Exception(f"ماكسيمو رجّع السجلات مش مترتبة بالـ {key} - وقفنا عشان منعدّيش سجلات")
 
+                for bad_id, reason in bad:
+                    self._record_result(type_key, f"{key}={int(bad_id)}",
+                                        f"ماكسيمو مش قادر يرجّع السجل ده (اتعزل واتعدّى): {reason}")
                 ok = await asyncio.gather(*[save_limited(r) for r in page])
-                fetched += len(page)
-                if not any(ok):
+                fetched += len(page) + len(bad)
+                if page and not any(ok):
                     # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
                     # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
                     # 500 سجل من غير ما يتنقلوا
                     st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
                     return
 
-                last_id = int(max(ids))
+                last_id = int(max(ids + [b for b, _ in bad]))
                 cp = {
                     "last_id": last_id,
                     "migrated": cp.get("migrated", 0) + sum(ok),
-                    "failed": cp.get("failed", 0) + (len(ok) - sum(ok)),
+                    "failed": cp.get("failed", 0) + (len(ok) - sum(ok)) + len(bad),
                     "batches": cp.get("batches", 0),
+                    # IDs اللي ماكسيمو نفسه مش قادر يرجّعها - محفوظة عشان
+                    # تتعاد لاحقًا بعد ما حد يصلح الـ field class في ماكسيمو
+                    "maximo_unreadable_ids": cp.get("maximo_unreadable_ids", []) + [int(b) for b, _ in bad],
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 save_checkpoint(cp_key, cp)
