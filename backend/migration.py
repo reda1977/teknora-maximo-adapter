@@ -448,11 +448,46 @@ class MigrationRun:
             })
             return
 
+        # الربط بـ (key, siteid) لو السجلات الفرعية راجعة بـ siteid، وإلا بـ
+        # key لوحده - لو الـ Object Structure مش بيرجّع siteid، الربط بالزوج
+        # كان هيفشل كله بصمت والقائمة تيجي فاضية (اللي حصل فعليًا)
+        use_site = any(c.get("siteid") for c in children)
         groups = {}
         for c in children:
-            groups.setdefault((c.get(key), c.get("siteid")), []).append(c)
+            gk = (c.get(key), c.get("siteid")) if use_site else c.get(key)
+            groups.setdefault(gk, []).append(c)
+
+        matched = 0
         for r in records:
-            r[target] = groups.get((r.get(key), r.get("siteid")), [])
+            gk = (r.get(key), r.get("siteid")) if use_site else r.get(key)
+            r[target] = groups.get(gk, [])
+            matched += bool(r[target])
+
+        # مش فشل سجل بعينه، بس لازم يبان في التقرير - قائمة فاضية من غير أي
+        # رسالة هي بالظبط اللي خلانا منعرفش إن السيكونس مبيوصلش
+        label = f"{attach['label']} ({attach['os']})"
+        if not children:
+            note = f"{label}: ماكسيمو رجّع 0 سجل - مفيش حاجة تتربط"
+        elif not matched:
+            note = (f"{label}: اتجاب {len(children)} سجل بس ولا واحد اتربط بأي سجل أب بالمفتاح '{key}'"
+                    f" - مفاتيح السجل الفرعي: {sorted(children[0].keys())[:25]}")
+        else:
+            note = None
+        if note:
+            self.state["types"][type_key]["failures"].append({"ref": "-", "error": note})
+        print(f"[migration] {attach['os']}: {len(children)} children, attached to {matched} of {len(records)} records")
+
+    async def _fetch_page_with_retry(self, spec: dict, where: str, key: str, attempts: int = 3) -> list:
+        """3 محاولات بانتظار متزايد (5ث، 15ث) - عطل عابر في صفحة واحدة
+        مينهيش الدفعة كلها. لو الـ 3 فشلوا الخطأ بيطلع في التقرير."""
+        for attempt in range(attempts):
+            try:
+                return await self.maximo.fetch_first_page(spec["os"], where=where, order_by=f"+spi:{key}",
+                                                          inline=spec.get("inline", True))
+            except Exception:
+                if attempt == attempts - 1:
+                    raise
+                await asyncio.sleep(5 * 3 ** attempt)
 
     async def _migrate_batched(self, type_key: str, client: httpx.AsyncClient):
         """دفعة واحدة (batch_size سجل) بتبدأ بعد آخر ID اتحفظ في المرة اللي
@@ -477,42 +512,46 @@ class MigrationRun:
             async with sem:
                 return await self._save_record(type_key, spec, save_fn, client, r)
 
-        where = f"spi:{key}>{start_after}" if start_after is not None else None
         fetched = 0
+        last_id = start_after
         try:
-            async with aclosing(self.maximo.iter_pages(spec["os"], where=where, order_by=f"+spi:{key}",
-                                                       inline=spec.get("inline", True))) as pages:
-                async for page in pages:
-                    page = page[: self.batch_size - fetched]
-                    if not page:
-                        break
-                    ids = [r.get(key) for r in page]
-                    if any(not isinstance(i, (int, float)) for i in ids):
-                        raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
+            while fetched < self.batch_size:
+                # كل صفحة استعلام جديد "أول 500 بعد آخر ID" (keyset) - مفيش
+                # صفحات بعيدة خالص، فالطلب رقم 400 بنفس سرعة الأول
+                where = f"spi:{key}>{last_id}" if last_id is not None else None
+                page = await self._fetch_page_with_retry(spec, where, key)
+                page = page[: self.batch_size - fetched]
+                if not page:
+                    st["batch"]["finished_all"] = True
+                    break
 
-                    ok = await asyncio.gather(*[save_limited(r) for r in page])
-                    fetched += len(page)
-                    if not any(ok):
-                        # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
-                        # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
-                        # 500 سجل من غير ما يتنقلوا
-                        st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
-                        return
+                ids = [r.get(key) for r in page]
+                if any(not isinstance(i, (int, float)) for i in ids):
+                    raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
+                if ids != sorted(ids):
+                    # لو ماكسيمو تجاهل الترتيب، "بعد آخر ID" هيعدّي سجلات
+                    # بصمت - نوقف بوضوح أحسن من فقد بيانات
+                    raise Exception(f"ماكسيمو رجّع السجلات مش مترتبة بالـ {key} - وقفنا عشان منعدّيش سجلات")
 
-                    cp = {
-                        "last_id": int(max(ids)),
-                        "migrated": cp.get("migrated", 0) + sum(ok),
-                        "failed": cp.get("failed", 0) + (len(ok) - sum(ok)),
-                        "batches": cp.get("batches", 0),
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    save_checkpoint(cp_key, cp)
-                    st["batch"]["last_id"] = cp["last_id"]
-                    if fetched >= self.batch_size:
-                        break
+                ok = await asyncio.gather(*[save_limited(r) for r in page])
+                fetched += len(page)
+                if not any(ok):
+                    # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
+                    # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
+                    # 500 سجل من غير ما يتنقلوا
+                    st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
+                    return
 
-            if fetched < self.batch_size:
-                st["batch"]["finished_all"] = True
+                last_id = int(max(ids))
+                cp = {
+                    "last_id": last_id,
+                    "migrated": cp.get("migrated", 0) + sum(ok),
+                    "failed": cp.get("failed", 0) + (len(ok) - sum(ok)),
+                    "batches": cp.get("batches", 0),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                save_checkpoint(cp_key, cp)
+                st["batch"]["last_id"] = last_id
             cp["batches"] = cp.get("batches", 0) + 1
             if fetched:
                 save_checkpoint(cp_key, cp)
