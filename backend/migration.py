@@ -291,6 +291,10 @@ def map_workorder(m: dict) -> dict:
     # المطلوب، فأي ربط بخطة لسه مش موجودة في تكنورا هيفشل بمخالفة مفتاح
     # خارجي. لو محتاج الربط ده لاحقًا، يحتاج "مرحلة تحديث" منفصلة بعد ما
     # خطط العمل تتنقل، مش جزء من النسخة الحالية.
+    # أسماء حقول ماكسيمو هنا اتأكدنا منها من عينة MXAPIWO حقيقية
+    # (/api/maximo/sample/mxapiwo): الأولوية اسمها wopriority (مفيش priority
+    # خالص - فكل الأوامر كانت بتتحفظ بأولوية 3)، والجدولة schedstart وعمود
+    # تكنورا المقابل اسمه scheddate
     return {
         "wonum": m.get("wonum"),
         "site_id": m.get("siteid"),
@@ -300,9 +304,16 @@ def map_workorder(m: dict) -> dict:
         "status": m.get("status") or "WAPPR",
         "assetnum": m.get("assetnum") or None,
         "location_id": m.get("location") or None,
-        "priority": m.get("priority") or 3,
+        "priority": m.get("wopriority") if m.get("wopriority") is not None else 3,
+        "parent_wo": m.get("parent") or None,
+        "supervisor": m.get("supervisor") or None,
+        "duration": m.get("estdur"),
         "targstartdate": m.get("targstartdate"),
         "targcompdate": m.get("targcompdate"),
+        "scheddate": m.get("schedstart"),
+        "schedfinish": m.get("schedfinish"),
+        "actstart": m.get("actstart"),
+        "actfinish": m.get("actfinish"),
         "reporteddate": m.get("reportdate") or m.get("reporteddate"),
         "reportedby": m.get("reportedby"),
     }
@@ -386,8 +397,9 @@ TYPE_SPECS = {
                    "batch_key": "workorderid",
                    "select": ",".join(f"spi:{f}" for f in (
                        "workorderid", "wonum", "siteid", "orgid", "description", "worktype", "status",
-                       "assetnum", "location", "priority", "targstartdate", "targcompdate",
-                       "reportdate", "reportedby"))},
+                       "assetnum", "location", "wopriority", "parent", "supervisor", "estdur",
+                       "targstartdate", "targcompdate", "schedstart", "schedfinish",
+                       "actstart", "actfinish", "reportdate", "reportedby"))},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
     "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan", "inline": False},
