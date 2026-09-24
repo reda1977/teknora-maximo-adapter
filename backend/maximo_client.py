@@ -136,6 +136,18 @@ class MaximoClient:
             print(f"[maximo_client] {object_structure}: skipped {failed_count} of {len(refs)} records (detail fetch failed)")
         return [r for r in results if r]
 
+    async def fetch_first_page(self, object_structure: str, where: str = None, order_by: str = None,
+                               page_size: int = 500, inline: bool = True) -> list:
+        """الصفحة الأولى بس من استعلام - للنقل على دفعات بمبدأ keyset (كل
+        طلب "أول 500 بعد آخر ID") بدل ما نتبع nextPage لصفحات بعيدة. الصفحات
+        البعيدة في جدول 22 مليون بتبطأ مع كل صفحة لحد ما تعدّي المهلة
+        (اللي حصل فعليًا: الدفعة وقفت عند 51,500 = صفحة 104)."""
+        async with aclosing(self.iter_pages(object_structure, where=where, order_by=order_by,
+                                            page_size=page_size, inline=inline)) as pages:
+            async for page in pages:
+                return page
+        return []
+
     async def query_all(self, object_structure: str, where: str = None, page_size: int = 500,
                         concurrency: int = 10, inline: bool = True) -> list:
         """كل السجلات مرة واحدة - للأنواع العادية الصغيرة نسبيًا."""
