@@ -53,13 +53,23 @@ class MaximoClient:
                 raise MaximoAuthError(f"فشل تسجيل الدخول لـ Maximo (كود {res.status_code}): {res.text[:300]}")
 
     async def query_all(self, object_structure: str, where: str = None, page_size: int = 200,
-                         concurrency: int = 5) -> list:
+                         concurrency: int = 10, inline: bool = True) -> list:
         """بيرجع كل سجلات Object Structure معين كاملة (مش مجرد روابط)،
         مع دعم صفحات لو المجموعة كبيرة."""
         member_refs = []
         async with httpx.AsyncClient(timeout=60.0) as client:
             url = f"{self.base_url}/oslc/os/{object_structure}"
+            # oslc.select=* بيطلب البيانات كاملة جوه كل صفحة بدل روابط بس -
+            # الفرق ضخم: 200 سجل في طلب واحد بدل 200 طلب منفصل. لو السيرفر
+            # تجاهله ورجّع روابط بس، fetch_one تحت بيرجع للجلب الفردي تلقائي
+            # (سجل فيه rdf:resource لوحده). الجلب الفردي كان بطيء لدرجة إن
+            # Work Orders عدّت مهلة الـ 30 دقيقة
+            # inline=False للأنواع اللي محتاجة سجلات فرعية متداخلة (tasks جوه
+            # job plan، sites جوه organization) - مش مضمون إن oslc.select=*
+            # بيرجعها في كل نسخ ماكسيمو، والجلب الفردي مضمون إنه بيرجعها
             params = {"oslc.pageSize": str(page_size)}
+            if inline:
+                params["oslc.select"] = "*"
             if where:
                 params["oslc.where"] = where
 
@@ -128,7 +138,9 @@ class MaximoClient:
             outcomes = await asyncio.gather(*[fetch_one(i, ref) for i, ref in enumerate(member_refs)], return_exceptions=True)
             failed_count = sum(1 for o in outcomes if isinstance(o, Exception))
             if failed_count:
-                print(f"[maximo_client] {object_structure}: {failed_count} من {len(member_refs)} سجل فشل جلبهم الفردي وتم تجاهلهم")
+                # رسالة ASCII بس عمدًا - print بعربي بيكراش على أي console
+                # مش UTF-8 وبيوقع الجلب كله (اتكشف في اختبار محلي)
+                print(f"[maximo_client] {object_structure}: skipped {failed_count} of {len(member_refs)} records (detail fetch failed)")
             return [r for r in results if r]
 
     async def count_collection(self, object_structure: str, where: str = None) -> int:
@@ -164,7 +176,7 @@ class MaximoClient:
     async def get_organizations_with_sites(self) -> list:
         """بيرجع كل المنظمات، كل واحدة ومواقعها المتداخلة (site relationship
         جوه MXORGANIZATION - مفيش object structure منفصل للمواقع)."""
-        orgs_raw = await self.query_all("mxorganization")
+        orgs_raw = await self.query_all("mxorganization", inline=False)
         orgs = []
         for o in orgs_raw:
             sites_raw = o.get("site") or []
