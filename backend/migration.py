@@ -13,12 +13,49 @@ Meters -> Work Orders -> Meter Readings -> Job Plans -> PM
 عدم إرسال حقول لسه مفيش بيانات حقيقية ليها بدل ما نخمّن ونفشل.
 """
 import asyncio
+import json
+import os
+from contextlib import aclosing
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
 from maximo_client import MaximoClient
 from teknora_client import TeknoraClient
+
+# نقطة الاستكمال بتاعة الأنواع المقسمة على دفعات (أوامر الشغل) بتتحفظ على
+# الديسك مش في الذاكرة - عشان تعيش بعد أي restart للكونتينر (docker-compose
+# بيعمل volume على المجلد ده)
+DATA_DIR = Path(os.environ.get("MIGRATOR_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+CHECKPOINT_FILE = DATA_DIR / "checkpoints.json"
+DEFAULT_BATCH_SIZE = 100_000
+SAVE_CONCURRENCY = 8
+
+
+def load_checkpoints() -> dict:
+    try:
+        return json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+
+
+def save_checkpoint(cp_key: str, value) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    all_cp = load_checkpoints()
+    if value is None:
+        all_cp.pop(cp_key, None)
+    else:
+        all_cp[cp_key] = value
+    tmp = CHECKPOINT_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(all_cp, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CHECKPOINT_FILE)
+
+
+def checkpoint_key(maximo_base_url: str, type_key: str) -> str:
+    # مفتاح مربوط بسيرفر ماكسيمو نفسه - عشان لو اتوصلت بسيرفر تاني متكملش
+    # من نقطة استكمال بتاعة سيرفر مختلف
+    return f"{maximo_base_url}|{type_key}"
 
 
 def _describe_exc(e: Exception) -> str:
@@ -157,6 +194,16 @@ def map_pm(m: dict) -> dict:
     frequency = None
     if m.get("frequency") is not None or m.get("frequnit"):
         frequency = {"frequency": m.get("frequency"), "frequnit": m.get("frequnit")}
+    # تابة السيكونس: /pm/save بيقبل "sequences" وبيطابقها على أعمدة
+    # PMSequence (jpnum, interval). MXAPIPM مبيرجعش PMSEQUENCE خالص، فبتتجاب
+    # لوحدها من PMSEQUENCE_LOAD وبتتربط بكل PM قبل التحويل (شوف "attach" في
+    # TYPE_SPECS) - لازم تتبعت مع الـ PM نفسه لأن /pm/save بيمسح السيكونس
+    # القديم ويحط اللي جاي معاه
+    sequences = [
+        {"jpnum": s.get("jpnum"), "interval": s.get("interval")}
+        for s in (m.get("_sequences") or [])
+        if s.get("jpnum")
+    ]
     return {
         "pmnum": m.get("pmnum"),
         "description": m.get("description") or m.get("pmnum"),
@@ -170,6 +217,7 @@ def map_pm(m: dict) -> dict:
         "priority": m.get("priority") or 3,
         "jpnum": m.get("jpnum") or None,
         "frequency": frequency,
+        "sequences": sequences,
     }
 
 
@@ -263,19 +311,28 @@ TYPE_SPECS = {
     "locations": {"os": "mxoperloc", "ref": "location", "map": map_location, "save": "save_location"},
     "assets": {"os": "mxasset", "ref": "assetnum", "map": map_asset, "save": "save_asset"},
     "meters": {"os": "oslcmeter", "ref": "metername", "map": map_meter, "save": "save_meter"},
-    "workorders": {"os": "mxapiwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder"},
+    # batch_key: أوامر الشغل 22 مليون سجل - بتتنقل على دفعات مرتبة بالـ
+    # workorderid، كل دفعة بتبدأ بعد آخر ID اتحفظ (مش بعد رقم صفحة، عشان
+    # الصفحات العميقة في جدول بالحجم ده بطيئة جدًا في ماكسيمو)
+    "workorders": {"os": "mxapiwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder",
+                   "batch_key": "workorderid"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
     "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan", "inline": False},
-    "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm"},
+    # attach: السيكونس بيتجاب من Object Structure منفصل ويتربط بكل PM بـ
+    # (pmnum, siteid) قبل الحفظ
+    "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm",
+           "attach": {"os": "pmsequence_load", "key": "pmnum", "as": "_sequences", "label": "PM Sequences"}},
 }
 
 
 class MigrationRun:
-    def __init__(self, maximo: MaximoClient, teknora: TeknoraClient, selected_types: list):
+    def __init__(self, maximo: MaximoClient, teknora: TeknoraClient, selected_types: list,
+                 batch_size: int = DEFAULT_BATCH_SIZE):
         self.maximo = maximo
         self.teknora = teknora
         self.selected_types = set(selected_types)
+        self.batch_size = batch_size
         self.state = {
             "status": "idle",  # idle | running | done
             "current_type": None,
@@ -311,7 +368,10 @@ class MigrationRun:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 for type_key in self.state["order"]:
                     self.state["current_type"] = type_key
-                    await self._migrate_type(type_key, client)
+                    if TYPE_SPECS[type_key].get("batch_key"):
+                        await self._migrate_batched(type_key, client)
+                    else:
+                        await self._migrate_type(type_key, client)
         except Exception as e:
             self.state["fatal_error"] = _describe_exc(e)
         finally:
@@ -319,17 +379,37 @@ class MigrationRun:
             self.state["status"] = "done"
             self.state["finished_at"] = datetime.now(timezone.utc).isoformat()
 
+    async def _save_record(self, type_key: str, spec: dict, save_fn, client: httpx.AsyncClient, r: dict) -> bool:
+        # بعض الحقول (زي "location" في oslclocationmeter) بترجع كمرجع
+        # {"rdf:resource": "..."} لسجل تاني بدل القيمة الفعلية - لازم نتبعها
+        # ونستبدلها قبل التحويل، وإلا هترسل كـ dict لتكنورا وترجع 422
+        for key in ("location", "assetnum", "asset"):
+            val = r.get(key)
+            if isinstance(val, dict) and "rdf:resource" in val:
+                resolved = await self.maximo.resolve_ref(val)
+                r[key] = resolved.get(key) or resolved.get("location") or resolved.get("assetnum")
+
+        ref = r.get(spec["ref"])
+        try:
+            await save_fn(client, spec["map"](r))
+            self._record_result(type_key, ref)
+            return True
+        except Exception as e:
+            err = _describe_exc(e)
+            if not ref:
+                # مفيش قيمة للحقل المرجعي - غالبًا اسم الحقل في map_* مش مطابق
+                # للاسم الحقيقي في رد Maximo، فبنضيف مفاتيح السجل الخام للتشخيص
+                err += f" | مفاتيح Maximo المتاحة: {list(r.keys())}"
+            self._record_result(type_key, ref, err)
+            return False
+
     async def _migrate_type(self, type_key: str, client: httpx.AsyncClient):
         spec = TYPE_SPECS[type_key]
+        timeout_s = 1800
         try:
-            # مهلة قصوى للجلب الأولي - لو حصل أي لوب أو تعليق غير متوقع في
-            # الاتصال بماكسيمو، النقل كله كان بيقف تمامًا من غير أي رسالة
-            # (زي اللي حصل فعليًا) بدل ما يفشل النوع ده بس ويكمل الباقي.
-            # 30 دقيقة (مش 5) لأن مجموعة كبيرة زي الأصول (~18 ألف سجل، كل
-            # واحد بيتجاب بطلب منفصل) بتاخد وقت طويل فعليًا وهي شغالة عادي -
-            # الـ 5 دقايق كانت قاصرة وبتوقف جلب ناجح بس بطيء (اتأكدنا فعليًا:
-            # نفس النوع كان بيرجع 17811 سجل بنجاح قبل ما نضيف المهلة القصيرة)
-            timeout_s = 1800
+            # مهلة قصوى للجلب الأولي عشان أي تعليق في الاتصال بماكسيمو يفشّل
+            # النوع ده بس بدل ما يوقف النقل كله من غير رسالة. 30 دقيقة لأن
+            # الأصول (~18 ألف سجل) بتاخد وقت فعلي وهي شغالة عادي
             if spec["os"] is None:
                 records = await asyncio.wait_for(self.maximo.get_organizations_with_sites(), timeout=timeout_s)
             else:
@@ -347,28 +427,96 @@ class MigrationRun:
             return
 
         self._init_type(type_key, len(records))
+        if spec.get("attach"):
+            await self._attach_children(type_key, spec["attach"], records)
         save_fn = getattr(self.teknora, spec["save"])
-
         for r in records:
-            # بعض الحقول (زي "location" في oslclocationmeter) بترجع كمرجع
-            # {"rdf:resource": "..."} لسجل تاني بدل القيمة الفعلية - لازم
-            # نتبعها ونستبدلها قبل التحويل، وإلا هترسل كـ dict لتكنورا
-            # وترجع 422 (اللي حصل فعليًا مع Historical Location Meter Readings)
-            for key in ("location", "assetnum", "asset"):
-                val = r.get(key)
-                if isinstance(val, dict) and "rdf:resource" in val:
-                    resolved = await self.maximo.resolve_ref(val)
-                    r[key] = resolved.get(key) or resolved.get("location") or resolved.get("assetnum")
+            await self._save_record(type_key, spec, save_fn, client, r)
 
-            ref = r.get(spec["ref"])
-            try:
-                await save_fn(client, spec["map"](r))
-                self._record_result(type_key, ref)
-            except Exception as e:
-                err = _describe_exc(e)
-                if not ref:
-                    # مفيش قيمة للحقل المرجعي - غالبًا اسم الحقل في map_* مش
-                    # مطابق للاسم الحقيقي في رد Maximo، فبنضيف مفاتيح السجل
-                    # الخام هنا عشان نشخّص الاسم الصح من غير تخمين تاني
-                    err += f" | مفاتيح Maximo المتاحة: {list(r.keys())}"
-                self._record_result(type_key, ref, err)
+    async def _attach_children(self, type_key: str, attach: dict, records: list):
+        """بيجيب سجلات فرعية من Object Structure منفصل (زي PMSEQUENCE_LOAD)
+        ويربطها بكل سجل أب بـ (key, siteid). siteid جزء من المفتاح لأن
+        pmnum في ماكسيمو مميز جوه الـ site بس، مش على مستوى النظام كله."""
+        key, target = attach["key"], attach["as"]
+        try:
+            children = await asyncio.wait_for(self.maximo.query_all(attach["os"]), timeout=1800)
+        except Exception as e:
+            reason = "عدّى 30 دقيقة" if isinstance(e, asyncio.TimeoutError) else _describe_exc(e)
+            # الأب بيتحفظ عادي من غير الفرعيات بدل ما النوع كله يقف
+            self.state["types"][type_key]["failures"].append({
+                "ref": "-", "error": f"تعذر جلب {attach['label']} من Maximo ({attach['os']}): {reason}"
+            })
+            return
+
+        groups = {}
+        for c in children:
+            groups.setdefault((c.get(key), c.get("siteid")), []).append(c)
+        for r in records:
+            r[target] = groups.get((r.get(key), r.get("siteid")), [])
+
+    async def _migrate_batched(self, type_key: str, client: httpx.AsyncClient):
+        """دفعة واحدة (batch_size سجل) بتبدأ بعد آخر ID اتحفظ في المرة اللي
+        فاتت. الجلب والحفظ صفحة بصفحة (مش تحميل الدفعة كلها في الذاكرة)،
+        ونقطة الاستكمال بتتحفظ على الديسك بعد كل صفحة - لو الاتصال وقع في
+        النص، التشغيلة الجاية بتكمل من آخر صفحة خلصت."""
+        spec = TYPE_SPECS[type_key]
+        key = spec["batch_key"]
+        cp_key = checkpoint_key(self.maximo.base_url, type_key)
+        cp = load_checkpoints().get(cp_key) or {"last_id": None, "migrated": 0, "failed": 0, "batches": 0}
+        start_after = cp.get("last_id")
+
+        self._init_type(type_key, self.batch_size)
+        st = self.state["types"][type_key]
+        st["batch"] = {"size": self.batch_size, "start_after": start_after, "last_id": start_after,
+                       "migrated_before": cp.get("migrated", 0), "finished_all": False}
+
+        save_fn = getattr(self.teknora, spec["save"])
+        sem = asyncio.Semaphore(SAVE_CONCURRENCY)
+
+        async def save_limited(r):
+            async with sem:
+                return await self._save_record(type_key, spec, save_fn, client, r)
+
+        where = f"spi:{key}>{start_after}" if start_after is not None else None
+        fetched = 0
+        try:
+            async with aclosing(self.maximo.iter_pages(spec["os"], where=where, order_by=f"+spi:{key}",
+                                                       inline=spec.get("inline", True))) as pages:
+                async for page in pages:
+                    page = page[: self.batch_size - fetched]
+                    if not page:
+                        break
+                    ids = [r.get(key) for r in page]
+                    if any(not isinstance(i, (int, float)) for i in ids):
+                        raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
+
+                    ok = await asyncio.gather(*[save_limited(r) for r in page])
+                    fetched += len(page)
+                    if not any(ok):
+                        # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
+                        # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
+                        # 500 سجل من غير ما يتنقلوا
+                        st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
+                        return
+
+                    cp = {
+                        "last_id": int(max(ids)),
+                        "migrated": cp.get("migrated", 0) + sum(ok),
+                        "failed": cp.get("failed", 0) + (len(ok) - sum(ok)),
+                        "batches": cp.get("batches", 0),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    save_checkpoint(cp_key, cp)
+                    st["batch"]["last_id"] = cp["last_id"]
+                    if fetched >= self.batch_size:
+                        break
+
+            if fetched < self.batch_size:
+                st["batch"]["finished_all"] = True
+            cp["batches"] = cp.get("batches", 0) + 1
+            if fetched:
+                save_checkpoint(cp_key, cp)
+        except Exception as e:
+            st["failures"].append({"ref": "-", "error": f"تعذر جلب البيانات من Maximo: {_describe_exc(e)}"})
+        finally:
+            st["total"] = st["done"]

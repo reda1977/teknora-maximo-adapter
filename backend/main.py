@@ -15,7 +15,8 @@ from pydantic import BaseModel
 
 from maximo_client import MaximoClient, MaximoAuthError
 from teknora_client import TeknoraClient, TeknoraAuthError
-from migration import MigrationRun, MIGRATION_ORDER, TYPE_SPECS
+from migration import (DEFAULT_BATCH_SIZE, MIGRATION_ORDER, TYPE_SPECS, MigrationRun,
+                       checkpoint_key, load_checkpoints, save_checkpoint)
 
 app = FastAPI(title="Maximo -> Teknora Migrator")
 app.add_middleware(
@@ -48,6 +49,7 @@ class TeknoraConnectRequest(BaseModel):
 
 class StartMigrationRequest(BaseModel):
     types: list[str]
+    batch_size: int = DEFAULT_BATCH_SIZE
 
 
 def _describe_exc(e: Exception) -> str:
@@ -98,11 +100,33 @@ async def maximo_summary():
             counts[type_key] = None
             errors[type_key] = _describe_exc(e)[:300]
 
+    all_cp = load_checkpoints()
+    batched = {
+        type_key: {
+            "batch_size": DEFAULT_BATCH_SIZE,
+            "checkpoint": all_cp.get(checkpoint_key(client.base_url, type_key)),
+        }
+        for type_key, spec in TYPE_SPECS.items() if spec.get("batch_key")
+    }
+
     return {
         "counts": counts,
         "errors": errors,
         "order": MIGRATION_ORDER,
+        "batched": batched,
     }
+
+
+@app.delete("/api/checkpoints/{type_key}")
+async def reset_checkpoint(type_key: str):
+    client: MaximoClient = STATE["maximo"]
+    if not client:
+        raise HTTPException(status_code=400, detail="لسه متصلتش بـ Maximo")
+    run: MigrationRun = STATE["run"]
+    if run and run.state["status"] == "running":
+        raise HTTPException(status_code=409, detail="مينفعش تصفّر نقطة الاستكمال والنقل شغال")
+    save_checkpoint(checkpoint_key(client.base_url, type_key), None)
+    return {"message": "اتصفّرت نقطة الاستكمال - الدفعة الجاية هتبدأ من الأول"}
 
 
 @app.post("/api/migrate/start")
@@ -118,7 +142,9 @@ async def start_migration(req: StartMigrationRequest):
     if existing_run and existing_run.state["status"] == "running":
         raise HTTPException(status_code=409, detail="فيه عملية نقل شغالة بالفعل")
 
-    run = MigrationRun(maximo, teknora, req.types)
+    if req.batch_size < 1:
+        raise HTTPException(status_code=400, detail="حجم الدفعة لازم يكون أكبر من صفر")
+    run = MigrationRun(maximo, teknora, req.types, batch_size=req.batch_size)
     STATE["run"] = run
     asyncio.create_task(run.run())
     return {"message": "بدأت عملية النقل"}
