@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from maximo_client import MaximoClient, MaximoAuthError
 from teknora_client import TeknoraClient, TeknoraAuthError
 from migration import (DEFAULT_BATCH_SIZE, MIGRATION_ORDER, TYPE_SPECS, MigrationRun,
-                       checkpoint_key, load_checkpoints, save_checkpoint)
+                       checkpoint_key, failed_entry, load_checkpoints, save_checkpoint)
 
 app = FastAPI(title="Maximo -> Teknora Migrator")
 app.add_middleware(
@@ -102,13 +102,18 @@ async def maximo_summary():
             errors[type_key] = _describe_exc(e)[:300]
 
     all_cp = load_checkpoints()
-    batched = {
-        type_key: {
+    batched = {}
+    for type_key, spec in TYPE_SPECS.items():
+        if not spec.get("batch_key"):
+            continue
+        cp_key = checkpoint_key(client.base_url, type_key)
+        fe = failed_entry(cp_key)
+        batched[type_key] = {
             "batch_size": DEFAULT_BATCH_SIZE,
-            "checkpoint": all_cp.get(checkpoint_key(client.base_url, type_key)),
+            "checkpoint": all_cp.get(cp_key),
+            "pending_retry": len(fe["items"]),
+            "legacy_pending": not fe.get("legacy_done") and fe.get("legacy_until") is not None,
         }
-        for type_key, spec in TYPE_SPECS.items() if spec.get("batch_key")
-    }
 
     return {
         "counts": counts,
@@ -165,6 +170,24 @@ async def start_migration(req: StartMigrationRequest):
     STATE["run"] = run
     asyncio.create_task(run.run())
     return {"message": "بدأت عملية النقل"}
+
+
+@app.post("/api/migrate/retry/{type_key}")
+async def retry_failed(type_key: str):
+    maximo: MaximoClient = STATE["maximo"]
+    teknora: TeknoraClient = STATE["teknora"]
+    if not maximo or not teknora:
+        raise HTTPException(status_code=400, detail="لازم تتصل بـ Maximo وتكنورا الأول")
+    if not TYPE_SPECS.get(type_key, {}).get("batch_key"):
+        raise HTTPException(status_code=400, detail="إعادة الفاشل متاحة للأنواع المقسمة على دفعات بس")
+    existing_run: MigrationRun = STATE["run"]
+    if existing_run and existing_run.state["status"] == "running":
+        raise HTTPException(status_code=409, detail="فيه عملية نقل شغالة بالفعل")
+
+    run = MigrationRun(maximo, teknora, [type_key], mode="retry")
+    STATE["run"] = run
+    asyncio.create_task(run.run())
+    return {"message": "بدأت إعادة الفاشل"}
 
 
 @app.get("/api/migrate/progress")

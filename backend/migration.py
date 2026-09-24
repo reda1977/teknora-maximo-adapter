@@ -52,6 +52,40 @@ def save_checkpoint(cp_key: str, value) -> None:
     tmp.replace(CHECKPOINT_FILE)
 
 
+FAILED_FILE = DATA_DIR / "failed.json"
+
+
+def load_failed_store() -> dict:
+    try:
+        return json.loads(FAILED_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+
+
+def save_failed(cp_key: str, entry: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    store = load_failed_store()
+    store[cp_key] = entry
+    tmp = FAILED_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(FAILED_FILE)
+
+
+def failed_entry(cp_key: str) -> dict:
+    """السجلات الفاشلة المستنية إعادة ({id: {ref, error}}) لنوع مقسم على
+    دفعات. legacy_until = آخر ID اتنقل قبل ما تسجيل الفشل يتضاف: اللي فشل
+    قبله مش متسجل، فإعادة الفاشل بتدوّر عليه في ماكسيمو (شوف _retry_failed)."""
+    entry = load_failed_store().get(cp_key) or {}
+    items = entry.setdefault("items", {})
+    if "legacy_until" not in entry:
+        cp = load_checkpoints().get(cp_key)
+        entry["legacy_until"] = cp.get("last_id") if cp else None
+        entry["legacy_done"] = entry["legacy_until"] is None
+        for b in (cp or {}).get("maximo_unreadable_ids", []):
+            items.setdefault(str(int(b)), {"ref": None, "error": "ماكسيمو مش قادر يرجّع السجل ده"})
+    return entry
+
+
 def checkpoint_key(maximo_base_url: str, type_key: str) -> str:
     # مفتاح مربوط بسيرفر ماكسيمو نفسه - عشان لو اتوصلت بسيرفر تاني متكملش
     # من نقطة استكمال بتاعة سيرفر مختلف
@@ -371,11 +405,12 @@ TYPE_SPECS = {
 
 class MigrationRun:
     def __init__(self, maximo: MaximoClient, teknora: TeknoraClient, selected_types: list,
-                 batch_size: int = DEFAULT_BATCH_SIZE):
+                 batch_size: int = DEFAULT_BATCH_SIZE, mode: str = "migrate"):
         self.maximo = maximo
         self.teknora = teknora
         self.selected_types = set(selected_types)
         self.batch_size = batch_size
+        self.mode = mode  # migrate | retry
         self.state = {
             "status": "idle",  # idle | running | done
             "current_type": None,
@@ -411,7 +446,9 @@ class MigrationRun:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 for type_key in self.state["order"]:
                     self.state["current_type"] = type_key
-                    if TYPE_SPECS[type_key].get("custom"):
+                    if self.mode == "retry":
+                        await self._retry_failed(type_key, client)
+                    elif TYPE_SPECS[type_key].get("custom"):
                         await getattr(self, TYPE_SPECS[type_key]["custom"])(type_key, client)
                     elif TYPE_SPECS[type_key].get("batch_key"):
                         await self._migrate_batched(type_key, client)
@@ -424,7 +461,8 @@ class MigrationRun:
             self.state["status"] = "done"
             self.state["finished_at"] = datetime.now(timezone.utc).isoformat()
 
-    async def _save_record(self, type_key: str, spec: dict, save_fn, client: httpx.AsyncClient, r: dict) -> bool:
+    async def _save_record(self, type_key: str, spec: dict, save_fn, client: httpx.AsyncClient, r: dict):
+        """None لو اتحفظ، أو نص الخطأ لو فشل."""
         # بعض الحقول (زي "location" في oslclocationmeter) بترجع كمرجع
         # {"rdf:resource": "..."} لسجل تاني بدل القيمة الفعلية - لازم نتبعها
         # ونستبدلها قبل التحويل، وإلا هترسل كـ dict لتكنورا وترجع 422
@@ -438,7 +476,7 @@ class MigrationRun:
         try:
             await save_fn(client, spec["map"](r))
             self._record_result(type_key, ref)
-            return True
+            return None
         except Exception as e:
             err = _describe_exc(e)
             if not ref:
@@ -446,7 +484,7 @@ class MigrationRun:
                 # للاسم الحقيقي في رد Maximo، فبنضيف مفاتيح السجل الخام للتشخيص
                 err += f" | مفاتيح Maximo المتاحة: {list(r.keys())}"
             self._record_result(type_key, ref, err)
-            return False
+            return err
 
     async def _migrate_type(self, type_key: str, client: httpx.AsyncClient):
         spec = TYPE_SPECS[type_key]
@@ -655,6 +693,11 @@ class MigrationRun:
         cp_key = checkpoint_key(self.maximo.base_url, type_key)
         cp = load_checkpoints().get(cp_key) or {"last_id": None, "migrated": 0, "failed": 0, "batches": 0}
         start_after = cp.get("last_id")
+        # لازم يتقرا قبل ما نقطة الاستكمال تتحرك، عشان legacy_until يتسجل
+        # على آخر ID اتنقل قبل تسجيل الفشل
+        fail_entry = failed_entry(cp_key)
+        save_failed(cp_key, fail_entry)
+        failed_items = fail_entry["items"]
 
         self._init_type(type_key, self.batch_size)
         st = self.state["types"][type_key]
@@ -688,14 +731,25 @@ class MigrationRun:
                     raise Exception(f"ماكسيمو رجّع السجلات مش مترتبة بالـ {key} - وقفنا عشان منعدّيش سجلات")
 
                 for bad_id, reason in bad:
-                    self._record_result(type_key, f"{key}={int(bad_id)}",
-                                        f"ماكسيمو مش قادر يرجّع السجل ده (اتعزل واتعدّى): {reason}")
-                ok = await asyncio.gather(*[save_limited(r) for r in page])
+                    err = f"ماكسيمو مش قادر يرجّع السجل ده (اتعزل واتعدّى): {reason}"
+                    self._record_result(type_key, f"{key}={int(bad_id)}", err)
+                    failed_items[str(int(bad_id))] = {"ref": None, "error": err[:300]}
+                errs = await asyncio.gather(*[save_limited(r) for r in page])
+                ok = [e is None for e in errs]
+                for r, err in zip(page, errs):
+                    rid = str(int(r[key]))
+                    if err is None:
+                        failed_items.pop(rid, None)
+                    else:
+                        failed_items[rid] = {"ref": r.get(spec["ref"]), "error": err[:300]}
                 fetched += len(page) + len(bad)
                 if page and not any(ok):
                     # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
                     # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
-                    # 500 سجل من غير ما يتنقلوا
+                    # 500 سجل من غير ما يتنقلوا. ومنسجلهمش فاشلين كمان: هيتعادوا
+                    # لوحدهم من نقطة الاستكمال في التشغيلة الجاية
+                    for r in page:
+                        failed_items.pop(str(int(r[key])), None)
                     st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
                     return
 
@@ -705,11 +759,11 @@ class MigrationRun:
                     "migrated": cp.get("migrated", 0) + sum(ok),
                     "failed": cp.get("failed", 0) + (len(ok) - sum(ok)) + len(bad),
                     "batches": cp.get("batches", 0),
-                    # IDs اللي ماكسيمو نفسه مش قادر يرجّعها - محفوظة عشان
-                    # تتعاد لاحقًا بعد ما حد يصلح الـ field class في ماكسيمو
-                    "maximo_unreadable_ids": cp.get("maximo_unreadable_ids", []) + [int(b) for b, _ in bad],
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
+                # الفاشل بيتحفظ قبل نقطة الاستكمال: لو الكونتينر وقع بينهم،
+                # أسوأ حاجة إن الصفحة تتعاد، مش إن سجلات فاشلة تضيع
+                save_failed(cp_key, fail_entry)
                 save_checkpoint(cp_key, cp)
                 st["batch"]["last_id"] = last_id
             cp["batches"] = cp.get("batches", 0) + 1
@@ -719,3 +773,102 @@ class MigrationRun:
             st["failures"].append({"ref": "-", "error": f"تعذر جلب البيانات من Maximo: {_describe_exc(e)}"})
         finally:
             st["total"] = st["done"]
+
+    async def _retry_failed(self, type_key: str, client: httpx.AsyncClient):
+        """بيعيد السجلات الفاشلة بالظبط بأرقامها (مش مدى أرقام كامل - أمر
+        شغل CLOSE اتحفظ قبل كده تكنورا بيرفض يتعدّل). أول مرة بس: بيضيف
+        أوامر COMP اللي اتنقلت قبل تسجيل الفشل، لأن كلها فشلت من غير استثناء
+        (update_asset_costs في تكنورا كان بيقع مع أي COMP)."""
+        spec = TYPE_SPECS[type_key]
+        key = spec["batch_key"]
+        cp_key = checkpoint_key(self.maximo.base_url, type_key)
+        entry = failed_entry(cp_key)
+        items = entry["items"]
+        self._init_type(type_key, 0)
+        st = self.state["types"][type_key]
+        st["retry"] = {"legacy_added": 0}
+
+        try:
+            if not entry.get("legacy_done") and entry.get("legacy_until") is not None:
+                for i in await self._scan_ids(spec, key, 'spi:status="COMP"', upto=entry["legacy_until"]):
+                    if str(i) not in items:
+                        items[str(i)] = {"ref": None, "error": "أمر COMP من دفعة قبل تسجيل الفشل"}
+                        st["retry"]["legacy_added"] += 1
+                entry["legacy_done"] = True
+                save_failed(cp_key, entry)
+        except Exception as e:
+            st["failures"].append({"ref": "-", "error": f"تعذر البحث عن أوامر COMP القديمة في Maximo: {_describe_exc(e)}"})
+            return
+
+        ids = sorted(int(i) for i in items)
+        st["total"] = len(ids)
+        st["retry"]["attempted"] = len(ids)
+        save_fn = getattr(self.teknora, spec["save"])
+        sem = asyncio.Semaphore(SAVE_CONCURRENCY)
+
+        async def save_limited(r):
+            async with sem:
+                return await self._save_record(type_key, spec, save_fn, client, r)
+
+        try:
+            for n in range(0, len(ids), 100):
+                chunk = ids[n:n + 100]
+                recs, unfetched = await self._fetch_exact_ids(spec, key, chunk)
+                for i, reason in unfetched:
+                    self._record_result(type_key, f"{key}={i}", reason)
+                    items[str(i)] = {"ref": items.get(str(i), {}).get("ref"), "error": reason[:300]}
+                errs = await asyncio.gather(*[save_limited(r) for r in recs])
+                for r, err in zip(recs, errs):
+                    rid = str(int(r[key]))
+                    if err is None:
+                        items.pop(rid, None)
+                    else:
+                        items[rid] = {"ref": r.get(spec["ref"]), "error": err[:300]}
+                save_failed(cp_key, entry)
+        except Exception as e:
+            st["failures"].append({"ref": "-", "error": f"تعذر جلب البيانات من Maximo: {_describe_exc(e)}"})
+        finally:
+            st["retry"]["still_failing"] = len(items)
+            st["total"] = st["done"]
+
+    async def _scan_ids(self, spec: dict, key: str, condition: str, upto: int) -> list:
+        """كل الـ IDs اللي بتحقق شرط لحد upto - keyset، الـ ID بس (حقل واحد
+        سليم، نفس اللي بنعزل بيه السجلات المكسورة)."""
+        ids, last = [], None
+        while True:
+            where = f"{condition} and spi:{key}<={upto}"
+            if last is not None:
+                where += f" and spi:{key}>{last}"
+            page = await self._fetch_page_with_retry(spec, where, key, select=f"spi:{key}")
+            page_ids = [int(r[key]) for r in page if isinstance(r.get(key), (int, float))]
+            if not page_ids:
+                return ids
+            ids.extend(page_ids)
+            last = max(page_ids)
+
+    async def _fetch_exact_ids(self, spec: dict, key: str, ids: list) -> tuple:
+        """(السجلات، [(id، سبب)]) للأرقام دي بالظبط. "in" الأول؛ لو فشل أو
+        رجّع ولا سجل، واحد واحد - عشان "in" متفهمش غلط يخلي أرقام موجودة
+        تتقال إنها مش موجودة."""
+        wanted = set(ids)
+        recs = []
+        try:
+            got = await self._fetch_page_with_retry(spec, f"spi:{key} in [{','.join(map(str, ids))}]", key,
+                                                    page_size=len(ids), attempts=2)
+            recs = [r for r in got if isinstance(r.get(key), (int, float)) and int(r[key]) in wanted]
+        except Exception:
+            recs = []
+
+        unfetched = []
+        if not recs:
+            for i in ids:
+                try:
+                    got = await self._fetch_page_with_retry(spec, f"spi:{key}={i}", key, page_size=1, attempts=2)
+                    recs.extend(r for r in got if isinstance(r.get(key), (int, float)) and int(r[key]) == i)
+                except Exception as e:
+                    unfetched.append((i, f"ماكسيمو مش قادر يرجّع السجل ده: {_describe_exc(e)}"))
+
+        found = {int(r[key]) for r in recs}
+        failed_ids = {i for i, _ in unfetched}
+        unfetched += [(i, "السجل مش موجود في ماكسيمو دلوقتي") for i in ids if i not in found and i not in failed_ids]
+        return recs, unfetched
