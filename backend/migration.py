@@ -67,9 +67,12 @@ def map_organization(o: dict) -> dict:
 
 
 def map_location(m: dict) -> dict:
+    # /locations/save بيرفض الطلب (422) لو "type" مش موجود - حقل إجباري
+    # عندهم (اتأكدنا من رسالة الخطأ الفعلية)
     return {
         "location_id": m.get("location"),
         "description": m.get("description") or m.get("location"),
+        "type": m.get("type") or "OPERATING",
         "status": m.get("status") or "OPERATING",
         "site_id": m.get("siteid"),
         "org_id": m.get("orgid"),
@@ -263,7 +266,7 @@ TYPE_SPECS = {
     "workorders": {"os": "mxapiwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
-    "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan"},
+    "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan", "inline": False},
     "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm"},
 }
 
@@ -330,11 +333,16 @@ class MigrationRun:
             if spec["os"] is None:
                 records = await asyncio.wait_for(self.maximo.get_organizations_with_sites(), timeout=timeout_s)
             else:
-                records = await asyncio.wait_for(self.maximo.query_all(spec["os"]), timeout=timeout_s)
+                records = await asyncio.wait_for(
+                    self.maximo.query_all(spec["os"], inline=spec.get("inline", True)), timeout=timeout_s)
         except Exception as e:
+            if isinstance(e, asyncio.TimeoutError):
+                reason = f"الجلب من Maximo عدّى {timeout_s // 60} دقيقة ولسه مخلصش"
+            else:
+                reason = _describe_exc(e)
             self._init_type(type_key, 0)
             self.state["types"][type_key]["failures"].append({
-                "ref": "-", "error": f"تعذر جلب البيانات من Maximo: {_describe_exc(e)}"
+                "ref": "-", "error": f"تعذر جلب البيانات من Maximo: {reason}"
             })
             return
 
