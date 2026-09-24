@@ -485,6 +485,7 @@ class MigrationRun:
                          "pms_with_sequences": len(targets)}
 
         unverifiable_noted = False
+        unreadable_slash = []
         for p in targets:
             ref = p.get("pmnum")
             payload = map_pm(p)
@@ -497,7 +498,14 @@ class MigrationRun:
             try:
                 stored_pm = await self.teknora.get_pm(client, ref)
             except Exception as e:
-                self._record_result(type_key, ref, f"الطلب اتقبل بس مقدرناش نقرا الـ PM من تكنورا نتأكد: {_describe_exc(e)}")
+                if "/" in (ref or "") and "HTTP 404" in str(e):
+                    # GET /pm/{pmnum} في تكنورا مش بيطابق أي رقم فيه "/" (الـ
+                    # path بيتقسم على الـ "/" فمفيش route يطابقه) - الحفظ اتقبل،
+                    # بس مفيش طريقة نقرا بيها السجل نتأكد
+                    unreadable_slash.append(ref)
+                    self._record_result(type_key, ref)
+                else:
+                    self._record_result(type_key, ref, f"الطلب اتقبل بس مقدرناش نقرا الـ PM من تكنورا نتأكد: {_describe_exc(e)}")
                 continue
             stored = _find_sequence_list(stored_pm)
             if stored is None:
@@ -513,6 +521,14 @@ class MigrationRun:
                 self._record_result(type_key, ref, f"اتبعت {sent} سيكونس والطلب اتقبل، بس تكنورا متخزن فيه {len(stored)}")
             else:
                 self._record_result(type_key, ref)
+
+        if unreadable_slash:
+            st["failures"].append({
+                "ref": unreadable_slash[0],
+                "error": (f"{len(unreadable_slash)} PM رقمهم فيه \"/\": اتحفظوا، بس GET /pm/{{pmnum}} في تكنورا "
+                          f"بيرجع 404 لأي رقم فيه \"/\"، فمقدرناش نتأكد من السيكونس بتاعهم "
+                          f"(وغالبًا شاشة تكنورا نفسها مش هتعرف تفتحهم) - أمثلة: {unreadable_slash[:5]}"),
+            })
 
     async def _attach_children(self, type_key: str, attach: dict, records: list, children: list = None):
         """بيجيب سجلات فرعية من Object Structure منفصل (زي PMSEQUENCE_LOAD)
