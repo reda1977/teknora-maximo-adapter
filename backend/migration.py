@@ -136,6 +136,21 @@ def map_asset(m: dict) -> dict:
     }
 
 
+def _sequence_rows(children: list) -> list:
+    """صفوف السيكونس الفعلية من سجلات PMSEQUENCE_LOAD. السجل ممكن يكون
+    سيكونس واحد مسطّح (فيه jpnum مباشرة)، أو سجل PM والسيكونس متداخل جوّاه
+    تحت "pmsequence". المتداخل ليه الأولوية - لو السجل هو الـ PM نفسه، الـ
+    jpnum اللي في مستواه الأول هو خطة الـ PM الأساسية مش سيكونس."""
+    rows = []
+    for c in children:
+        nested = [n for k in ("pmsequence", "pmsequences") for n in (c.get(k) or []) if isinstance(n, dict)]
+        if nested:
+            rows.extend(s for s in (_strip_spi(n) for n in nested) if s.get("jpnum"))
+        elif c.get("jpnum"):
+            rows.append(c)
+    return rows
+
+
 def _find_sequence_list(d, depth: int = 0):
     """قائمة السيكونس جوه رد GET /pm/{pmnum} من تكنورا - الاسم بالظبط مش
     موثّق، فبندوّر على الأسماء المحتملة في المستوى الأول وجوه أي object
@@ -218,8 +233,7 @@ def map_pm(m: dict) -> dict:
     # القديم ويحط اللي جاي معاه
     sequences = [
         {"jpnum": s.get("jpnum"), "interval": s.get("interval")}
-        for s in (m.get("_sequences") or [])
-        if s.get("jpnum")
+        for s in _sequence_rows(m.get("_sequences") or [])
     ]
     return {
         "pmnum": m.get("pmnum"),
@@ -490,6 +504,17 @@ class MigrationRun:
             ref = p.get("pmnum")
             payload = map_pm(p)
             sent = len(payload["sequences"])
+            if not sent:
+                # ماكسيمو رجّع سجلات سيكونس للـ PM ده بس ملقيناش فيها jpnum -
+                # الإرسال بقائمة فاضية كان بيعدّي "ناجح" وتكنورا بيمسح أي
+                # سيكونس موجود (اللي حصل فعليًا: ولا صف اتخزن)، فمنبعتش خالص
+                c = p[attach["as"]][0]
+                nested = {k: sorted(_strip_spi(c[k][0]).keys())[:20] for k in c
+                          if isinstance(c.get(k), list) and c[k] and isinstance(c[k][0], dict)}
+                self._record_result(type_key, ref,
+                                    f"ماكسيمو رجّع {len(p[attach['as']])} سجل سيكونس للـ PM ده بس ملقيناش فيهم jpnum"
+                                    f" - مفاتيح السجل: {sorted(c.keys())[:30]} - القوايم المتداخلة: {nested}")
+                continue
             try:
                 await self.teknora.save_pm(client, payload)
             except Exception as e:
