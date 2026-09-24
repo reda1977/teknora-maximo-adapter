@@ -66,7 +66,7 @@ def _describe_exc(e: Exception) -> str:
 
 MIGRATION_ORDER = [
     "organizations", "persons", "crafts", "labor", "locations", "assets",
-    "meters", "workorders", "meterreadings", "locationmeterreadings", "jobplans", "pm",
+    "meters", "workorders", "meterreadings", "locationmeterreadings", "jobplans", "pm", "pmsequences",
 ]
 # تسمية الأنواع (بالعربي والإنجليزي) مسؤولية الواجهة الأمامية بالكامل -
 # الباك إند بيرجع بس المفاتيح التقنية (زي "assets")، عشان تبديل اللغة
@@ -134,6 +134,23 @@ def map_asset(m: dict) -> dict:
         "install_date": m.get("installdate"),
         "warranty_exp_date": m.get("warrantyexpdate"),
     }
+
+
+def _find_sequence_list(d, depth: int = 0):
+    """قائمة السيكونس جوه رد GET /pm/{pmnum} من تكنورا - الاسم بالظبط مش
+    موثّق، فبندوّر على الأسماء المحتملة في المستوى الأول وجوه أي object
+    متداخل مستوى واحد (زي {"pm": {...}, "sequences": [...]})."""
+    if not isinstance(d, dict):
+        return None
+    for k in ("sequences", "pm_sequences", "pmsequences", "pmsequence", "sequence"):
+        if isinstance(d.get(k), list):
+            return d[k]
+    if depth == 0:
+        for v in d.values():
+            found = _find_sequence_list(v, depth=1)
+            if found is not None:
+                return found
+    return None
 
 
 def _strip_spi(d: dict) -> dict:
@@ -330,6 +347,11 @@ TYPE_SPECS = {
     # (pmnum, siteid) قبل الحفظ
     "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm",
            "attach": {"os": "pmsequence_load", "key": "pmnum", "as": "_sequences", "label": "PM Sequences"}},
+    # خطوة مستقلة للسيكونس بس عشان تتجرب لوحدها: بتبعت الـ PM كامل (مش
+    # السيكونس لوحده، لأن /pm/save بيمسح التكرار ويصفّر الموقع لو مجوش في
+    # الطلب) لكن للـ PMs اللي ليها سيكونس بس، وبعدين بتقرا كل PM من تكنورا
+    # وتقارن العدد المتخزن بالمبعوت
+    "pmsequences": {"os": "pmsequence_load", "ref": "pmnum", "custom": "_migrate_pm_sequences"},
 }
 
 
@@ -375,7 +397,9 @@ class MigrationRun:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 for type_key in self.state["order"]:
                     self.state["current_type"] = type_key
-                    if TYPE_SPECS[type_key].get("batch_key"):
+                    if TYPE_SPECS[type_key].get("custom"):
+                        await getattr(self, TYPE_SPECS[type_key]["custom"])(type_key, client)
+                    elif TYPE_SPECS[type_key].get("batch_key"):
                         await self._migrate_batched(type_key, client)
                     else:
                         await self._migrate_type(type_key, client)
@@ -440,20 +464,71 @@ class MigrationRun:
         for r in records:
             await self._save_record(type_key, spec, save_fn, client, r)
 
-    async def _attach_children(self, type_key: str, attach: dict, records: list):
+    async def _migrate_pm_sequences(self, type_key: str, client: httpx.AsyncClient):
+        pm_spec = TYPE_SPECS["pm"]
+        attach = pm_spec["attach"]
+        self._init_type(type_key, 0)
+        st = self.state["types"][type_key]
+        try:
+            children = await asyncio.wait_for(self.maximo.query_all(attach["os"]), timeout=1800)
+            pms = await asyncio.wait_for(
+                self.maximo.query_all(pm_spec["os"], inline=pm_spec.get("inline", True)), timeout=1800)
+        except Exception as e:
+            reason = "عدّى 30 دقيقة" if isinstance(e, asyncio.TimeoutError) else _describe_exc(e)
+            st["failures"].append({"ref": "-", "error": f"تعذر جلب البيانات من Maximo: {reason}"})
+            return
+
+        await self._attach_children(type_key, attach, pms, children=children)
+        targets = [p for p in pms if p.get(attach["as"])]
+        st["total"] = len(targets)
+        st["summary"] = {"sequences_in_maximo": len(children), "pms_in_maximo": len(pms),
+                         "pms_with_sequences": len(targets)}
+
+        unverifiable_noted = False
+        for p in targets:
+            ref = p.get("pmnum")
+            payload = map_pm(p)
+            sent = len(payload["sequences"])
+            try:
+                await self.teknora.save_pm(client, payload)
+            except Exception as e:
+                self._record_result(type_key, ref, _describe_exc(e))
+                continue
+            try:
+                stored_pm = await self.teknora.get_pm(client, ref)
+            except Exception as e:
+                self._record_result(type_key, ref, f"الطلب اتقبل بس مقدرناش نقرا الـ PM من تكنورا نتأكد: {_describe_exc(e)}")
+                continue
+            stored = _find_sequence_list(stored_pm)
+            if stored is None:
+                # شكل رد GET /pm/{pmnum} مش معروف مسبقًا - لو ملقيناش قائمة
+                # سيكونس فيه، بنقول ده مرة واحدة بمفاتيح الرد الحقيقية بدل
+                # ما نحكم على السجل بتخمين
+                if not unverifiable_noted:
+                    keys = sorted(stored_pm.keys())[:30] if isinstance(stored_pm, dict) else type(stored_pm).__name__
+                    st["failures"].append({"ref": ref, "error": f"اتحفظ، بس رد تكنورا لـ GET /pm/{{pmnum}} مفيهوش قائمة سيكونس نقارن بيها - مفاتيح الرد: {keys}"})
+                    unverifiable_noted = True
+                self._record_result(type_key, ref)
+            elif len(stored) != sent:
+                self._record_result(type_key, ref, f"اتبعت {sent} سيكونس والطلب اتقبل، بس تكنورا متخزن فيه {len(stored)}")
+            else:
+                self._record_result(type_key, ref)
+
+    async def _attach_children(self, type_key: str, attach: dict, records: list, children: list = None):
         """بيجيب سجلات فرعية من Object Structure منفصل (زي PMSEQUENCE_LOAD)
         ويربطها بكل سجل أب بـ (key, siteid). siteid جزء من المفتاح لأن
         pmnum في ماكسيمو مميز جوه الـ site بس، مش على مستوى النظام كله."""
         key, target = attach["key"], attach["as"]
-        try:
-            children = await asyncio.wait_for(self.maximo.query_all(attach["os"]), timeout=1800)
-        except Exception as e:
-            reason = "عدّى 30 دقيقة" if isinstance(e, asyncio.TimeoutError) else _describe_exc(e)
-            # الأب بيتحفظ عادي من غير الفرعيات بدل ما النوع كله يقف
-            self.state["types"][type_key]["failures"].append({
-                "ref": "-", "error": f"تعذر جلب {attach['label']} من Maximo ({attach['os']}): {reason}"
-            })
-            return
+        if children is None:
+            try:
+                children = await asyncio.wait_for(self.maximo.query_all(attach["os"]), timeout=1800)
+            except Exception as e:
+                reason = "عدّى 30 دقيقة" if isinstance(e, asyncio.TimeoutError) else _describe_exc(e)
+                # الأب بيتحفظ عادي من غير الفرعيات بدل ما النوع كله يقف
+                self.state["types"][type_key]["failures"].append({
+                    "ref": "-", "error": f"تعذر جلب {attach['label']} من Maximo ({attach['os']}): {reason}"
+                })
+                return
 
         # الربط بـ (key, siteid) لو السجلات الفرعية راجعة بـ siteid، وإلا بـ
         # key لوحده - لو الـ Object Structure مش بيرجّع siteid، الربط بالزوج

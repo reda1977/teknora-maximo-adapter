@@ -12,6 +12,8 @@ password-grant عادي (POST /token بصيغة form-urlencoded)، ونفس نق
 بيرجع أسماء الأعمدة زي ما هي). أي حقل غلط هيظهر واضح في تقرير الفشل
 بدل ما يتصلح بالتخمين الأعمى.
 """
+from urllib.parse import quote
+
 import httpx
 
 
@@ -60,6 +62,18 @@ class TeknoraClient:
             # ID is required" مع إننا بعتنا org_id) من غير تخمين اسم تاني أعمى
             raise Exception(f"HTTP {res.status_code}: {res.text[:300]} | sent={str(payload)[:200]}")
         return res.json() if res.content else {}
+
+    async def _get(self, client: httpx.AsyncClient, path: str) -> dict:
+        res = await client.get(f"{self.base_url}{path}", headers=self._headers())
+        if res.status_code == 401:
+            await self.login()
+            res = await client.get(f"{self.base_url}{path}", headers=self._headers())
+        if res.status_code >= 400:
+            raise Exception(f"HTTP {res.status_code}: {res.text[:300]}")
+        return res.json() if res.content else {}
+
+    async def get_pm(self, client: httpx.AsyncClient, pmnum: str) -> dict:
+        return await self._get(client, f"/pm/{quote(pmnum, safe='')}")
 
     async def save_organization(self, client: httpx.AsyncClient, org: dict) -> dict:
         return await self._post(client, "/organizations/save", org)

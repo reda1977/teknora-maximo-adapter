@@ -364,6 +364,7 @@ const ICONS = {
   locationmeterreadings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><path d="M9 10l2 2 4-4"/></svg>',
   jobplans: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="15" y2="16"/></svg>',
   pm: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  pmsequences: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/></svg>',
   workorders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
 };
 
@@ -394,13 +395,14 @@ const I18N = {
     batch_reset_confirm: 'الدفعة الجاية هتبدأ من أول أمر شغل تاني. اللي اتنقل قبل كده مش هيتمسح. متأكد؟',
     batch_progress_label: (size, after) => after == null ? `(دفعة ${size} من البداية)` : `(دفعة ${size} بعد ID ${after})`,
     batch_done_all: 'خلصت كل أوامر الشغل - مفيش دفعات تانية',
+    seq_summary: (seqs, pms, withSeq) => `ماكسيمو رجّع ${seqs} سيكونس و ${pms} PM، منهم ${withSeq} PM ليهم سيكونس واتبعتوا`,
     batch_more: 'الدفعة دي خلصت. شغّل النقل تاني عشان الدفعة الجاية تكمل من حيث وقفت',
     th_type: 'النوع', th_ref: 'المرجع', th_reason: 'سبب الفشل',
     all_success: 'كل السجلات اتنقلت بنجاح من غير أي فشل 🎉',
     fatal_error_prefix: 'خطأ عام أوقف العملية: ',
     select_one_alert: 'اختار نوع بيانات واحد على الأقل',
     start_failed_alert: 'فشل بدء النقل',
-    types: { organizations: 'المنظمات والمواقع (Sites)', persons: 'الأشخاص (Persons)', crafts: 'الحرف (Crafts)', locations: 'المواقع (Locations)', assets: 'الأصول (Assets)', labor: 'العمالة (Labor)', meters: 'العدادات (Meters)', jobplans: 'خطط العمل (Job Plans)', pm: 'الصيانة الوقائية (PM)', workorders: 'أوامر الشغل (Work Orders)', meterreadings: 'قراءات عدادات الأصول التاريخية', locationmeterreadings: 'قراءات عدادات المواقع التاريخية' },
+    types: { organizations: 'المنظمات والمواقع (Sites)', persons: 'الأشخاص (Persons)', crafts: 'الحرف (Crafts)', locations: 'المواقع (Locations)', assets: 'الأصول (Assets)', labor: 'العمالة (Labor)', meters: 'العدادات (Meters)', jobplans: 'خطط العمل (Job Plans)', pm: 'الصيانة الوقائية (PM)', pmsequences: 'سيكونس الصيانة الوقائية (PM Sequences)', workorders: 'أوامر الشغل (Work Orders)', meterreadings: 'قراءات عدادات الأصول التاريخية', locationmeterreadings: 'قراءات عدادات المواقع التاريخية' },
   },
   en: {
     app_title: 'Data Migration Tool', app_subtitle: 'IBM Maximo → Teknora',
@@ -428,13 +430,14 @@ const I18N = {
     batch_reset_confirm: 'The next batch will start again from the first work order. Nothing already migrated is deleted. Continue?',
     batch_progress_label: (size, after) => after == null ? `(batch of ${size} from the start)` : `(batch of ${size} after ID ${after})`,
     batch_done_all: 'All work orders migrated - no batches left',
+    seq_summary: (seqs, pms, withSeq) => `Maximo returned ${seqs} sequences and ${pms} PMs; ${withSeq} PMs have sequences and were sent`,
     batch_more: 'This batch is done. Run the migration again to continue with the next batch from where it stopped',
     th_type: 'Type', th_ref: 'Reference', th_reason: 'Failure reason',
     all_success: 'All records migrated successfully with no failures 🎉',
     fatal_error_prefix: 'A general error stopped the process: ',
     select_one_alert: 'Select at least one data type',
     start_failed_alert: 'Failed to start migration',
-    types: { organizations: 'Organizations & Sites', persons: 'Persons', crafts: 'Crafts', locations: 'Locations', assets: 'Assets', labor: 'Labor', meters: 'Meters', jobplans: 'Job Plans', pm: 'Preventive Maintenance', workorders: 'Work Orders', meterreadings: 'Historical Asset Meter Readings', locationmeterreadings: 'Historical Location Meter Readings' },
+    types: { organizations: 'Organizations & Sites', persons: 'Persons', crafts: 'Crafts', locations: 'Locations', assets: 'Assets', labor: 'Labor', meters: 'Meters', jobplans: 'Job Plans', pm: 'Preventive Maintenance', pmsequences: 'PM Sequences', workorders: 'Work Orders', meterreadings: 'Historical Asset Meter Readings', locationmeterreadings: 'Historical Location Meter Readings' },
   },
 };
 
@@ -683,6 +686,14 @@ function renderReport(state) {
   }
 
   failuresEl.innerHTML = '';
+  for (const key of state.order) {
+    const s = (state.types[key] || {}).summary;
+    if (!s) continue;
+    const note = document.createElement('div');
+    note.className = 'msg success batch-done';
+    note.innerHTML = `<span>${esc(t('types')[key])}: ${esc(t('seq_summary')(fmt(s.sequences_in_maximo), fmt(s.pms_in_maximo), fmt(s.pms_with_sequences)))}</span>`;
+    failuresEl.appendChild(note);
+  }
   for (const key of state.order) {
     const b = (state.types[key] || {}).batch;
     if (!b) continue;
