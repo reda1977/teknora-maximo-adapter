@@ -56,7 +56,8 @@ class MaximoClient:
                 raise MaximoAuthError(f"فشل تسجيل الدخول لـ Maximo (كود {res.status_code}): {res.text[:300]}")
 
     async def iter_pages(self, object_structure: str, where: str = None, order_by: str = None,
-                         page_size: int = 500, concurrency: int = 10, inline: bool = True):
+                         page_size: int = 500, concurrency: int = 10, inline: bool = True,
+                         select: str = None):
         """بيرجع السجلات صفحة بصفحة (async generator) بدل ما يحمّلها كلها في
         الذاكرة الأول - ضروري لأوامر الشغل (22 مليون سجل) اللي بتتحفظ صفحة
         بصفحة. لازم يتقفل بـ contextlib.aclosing لو المستهلك وقف بدري."""
@@ -68,7 +69,12 @@ class MaximoClient:
             # job plan، sites جوه organization) - مش مضمون إن oslc.select=*
             # بيرجعها في كل نسخ ماكسيمو، والجلب الفردي مضمون إنه بيرجعها
             params = {"oslc.pageSize": str(page_size)}
-            if inline:
+            # select صريح (حقول محددة) أولى من "*" لو متحدد - "*" بيخلي ماكسيمو
+            # يبني كل حقل في الـ Object Structure، ولو حقل منهم ليه class
+            # مكسور على السيرفر الصفحة كلها بتفشل بـ BMXAA4183E
+            if select:
+                params["oslc.select"] = select
+            elif inline:
                 params["oslc.select"] = "*"
             if where:
                 params["oslc.where"] = where
@@ -137,13 +143,13 @@ class MaximoClient:
         return [r for r in results if r]
 
     async def fetch_first_page(self, object_structure: str, where: str = None, order_by: str = None,
-                               page_size: int = 500, inline: bool = True) -> list:
+                               page_size: int = 500, inline: bool = True, select: str = None) -> list:
         """الصفحة الأولى بس من استعلام - للنقل على دفعات بمبدأ keyset (كل
         طلب "أول 500 بعد آخر ID") بدل ما نتبع nextPage لصفحات بعيدة. الصفحات
         البعيدة في جدول 22 مليون بتبطأ مع كل صفحة لحد ما تعدّي المهلة
         (اللي حصل فعليًا: الدفعة وقفت عند 51,500 = صفحة 104)."""
         async with aclosing(self.iter_pages(object_structure, where=where, order_by=order_by,
-                                            page_size=page_size, inline=inline)) as pages:
+                                            page_size=page_size, inline=inline, select=select)) as pages:
             async for page in pages:
                 return page
         return []
