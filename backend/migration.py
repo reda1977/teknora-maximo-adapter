@@ -448,11 +448,34 @@ class MigrationRun:
             })
             return
 
+        # الربط بـ (key, siteid) لو السجلات الفرعية راجعة بـ siteid، وإلا بـ
+        # key لوحده - لو الـ Object Structure مش بيرجّع siteid، الربط بالزوج
+        # كان هيفشل كله بصمت والقائمة تيجي فاضية (اللي حصل فعليًا)
+        use_site = any(c.get("siteid") for c in children)
         groups = {}
         for c in children:
-            groups.setdefault((c.get(key), c.get("siteid")), []).append(c)
+            gk = (c.get(key), c.get("siteid")) if use_site else c.get(key)
+            groups.setdefault(gk, []).append(c)
+
+        matched = 0
         for r in records:
-            r[target] = groups.get((r.get(key), r.get("siteid")), [])
+            gk = (r.get(key), r.get("siteid")) if use_site else r.get(key)
+            r[target] = groups.get(gk, [])
+            matched += bool(r[target])
+
+        # مش فشل سجل بعينه، بس لازم يبان في التقرير - قائمة فاضية من غير أي
+        # رسالة هي بالظبط اللي خلانا منعرفش إن السيكونس مبيوصلش
+        label = f"{attach['label']} ({attach['os']})"
+        if not children:
+            note = f"{label}: ماكسيمو رجّع 0 سجل - مفيش حاجة تتربط"
+        elif not matched:
+            note = (f"{label}: اتجاب {len(children)} سجل بس ولا واحد اتربط بأي سجل أب بالمفتاح '{key}'"
+                    f" - مفاتيح السجل الفرعي: {sorted(children[0].keys())[:25]}")
+        else:
+            note = None
+        if note:
+            self.state["types"][type_key]["failures"].append({"ref": "-", "error": note})
+        print(f"[migration] {attach['os']}: {len(children)} children, attached to {matched} of {len(records)} records")
 
     async def _fetch_page_with_retry(self, spec: dict, where: str, key: str, attempts: int = 3) -> list:
         """3 محاولات بانتظار متزايد (5ث، 15ث) - عطل عابر في صفحة واحدة
