@@ -5,6 +5,7 @@
 بواسطة الأدمن)، لكنها بتستخدم بيانات دخول حقيقية للاتصال بالنظامين.
 """
 import asyncio
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -115,6 +116,22 @@ async def maximo_summary():
         "order": MIGRATION_ORDER,
         "batched": batched,
     }
+
+
+@app.get("/api/maximo/sample/{object_structure}")
+async def maximo_sample(object_structure: str, n: int = 3):
+    """أول كام سجل من أي Object Structure زي ما ماكسيمو بيرجعهم بالظبط
+    (بعد شيل بادئة spi: من المستوى الأول بس) - عشان نشوف الشكل الحقيقي
+    للبيانات قبل ما نكتب الماپنج، بدل ما نفترضه ونكتشف الغلط بعد نقل كامل."""
+    client: MaximoClient = STATE["maximo"]
+    if not client:
+        raise HTTPException(status_code=400, detail="لسه متصلتش بـ Maximo")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", object_structure):
+        raise HTTPException(status_code=400, detail="اسم Object Structure غير صالح")
+    try:
+        return await client.fetch_first_page(object_structure, page_size=max(1, min(n, 20)))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=_describe_exc(e))
 
 
 @app.delete("/api/checkpoints/{type_key}")
