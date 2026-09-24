@@ -47,6 +47,13 @@ def map_organization(o: dict) -> dict:
         "itemsetid": "SET1",
         "companysetid": "SET1",
         "active": True,
+        # /organizations/save بيبعت اللي إحنا بنبعته صراحةً حتى لو None -
+        # وده بيلغي الـ default="EGP" بتاع العمود (SQLAlchemy مبيطبقش الـ
+        # default غير لو العمود اتسابه خالص). النتيجة كانت NULL في قاعدة
+        # البيانات، وشاشة عرض المنظمات في تكنورا بترفض القيمة دي بالكامل
+        # (ResponseValidationError) وبتكراش لأي منظمة من غير عملة
+        "basecurrency1": "EGP",
+        "basecurrency2": "EGP",
         "sites": [
             {
                 "site_id": s.get("site_id"),
