@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from maximo_client import MaximoClient, MaximoAuthError
 from teknora_client import TeknoraClient, TeknoraAuthError
 from migration import (DEFAULT_BATCH_SIZE, MIGRATION_ORDER, TYPE_SPECS, MigrationRun,
-                       checkpoint_key, failed_entry, load_checkpoints, save_checkpoint)
+                       checkpoint_key, failed_entry, load_checkpoints, save_checkpoint, save_failed)
 
 app = FastAPI(title="Maximo -> Teknora Migrator")
 app.add_middleware(
@@ -153,8 +153,12 @@ async def reset_checkpoint(type_key: str):
     run: MigrationRun = STATE["run"]
     if run and run.state["status"] == "running":
         raise HTTPException(status_code=409, detail="مينفعش تصفّر نقطة الاستكمال والنقل شغال")
-    save_checkpoint(checkpoint_key(client.base_url, type_key), None)
-    return {"message": "اتصفّرت نقطة الاستكمال - الدفعة الجاية هتبدأ من الأول"}
+    cp_key = checkpoint_key(client.base_url, type_key)
+    save_checkpoint(cp_key, None)
+    # قايمة الفاشل بتتصفّر كمان - من غيرها "إعادة الفاشل" كانت هتبعت أرقام
+    # من التشغيلة القديمة وتدوّر على أوامر COMP في مداها القديم
+    save_failed(cp_key, {"items": {}, "legacy_until": None, "legacy_done": True})
+    return {"message": "اتصفّرت نقطة الاستكمال وقايمة الفاشل - الدفعة الجاية هتبدأ من الأول"}
 
 
 @app.post("/api/migrate/start")

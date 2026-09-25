@@ -32,6 +32,13 @@ CHECKPOINT_FILE = DATA_DIR / "checkpoints.json"
 DEFAULT_BATCH_SIZE = 100_000
 SAVE_CONCURRENCY = 8
 
+# العمالة الفعلية لأوامر الشغل - الاسم والحقول من عينة حقيقية
+# (/api/maximo/sample/oslclabtrans): MXLABTRANS مش موجود في النسخة دي
+LABTRANS_OS = "oslclabtrans"
+LABTRANS_SELECT = ",".join(f"spi:{f}" for f in (
+    "refwo", "siteid", "laborcode", "craft", "regularhrs", "payrate", "linecost",
+    "startdate", "startdateentered", "finishdate", "finishdateentered", "transtype"))
+
 
 def load_checkpoints() -> dict:
     try:
@@ -295,7 +302,37 @@ def map_workorder(m: dict) -> dict:
     # (/api/maximo/sample/mxapiwo): الأولوية اسمها wopriority (مفيش priority
     # خالص - فكل الأوامر كانت بتتحفظ بأولوية 3)، والجدولة schedstart وعمود
     # تكنورا المقابل اسمه scheddate
+    #
+    # الفرعيات (من عينة MXAPIWODETAIL وOSLCLABTRANS حقيقية)، وبتروح لـ
+    # smart_sync في /workorder/save اللي بيشيل من كل صف id وwonum بس:
+    # - tasks (woactivity): taskid بتاع ماكسيمو (10، 20...) بيروح wosequence -
+    #   WOTask.taskid في تكنورا مفتاح أساسي للجدول كله، لو اتبعت كان هيتعارض
+    #   بين أوامر الشغل (كل أمر فيه "تاسك 10")
+    # - planned_labor (wplabor): من غير taskid - WOPLabor.taskid بيشاور على
+    #   المفتاح الأساسي ده، فرقم تاسك ماكسيمو كان هيربط بتاسك أمر تاني
+    # - actual_labor: من OSLCLABTRANS (بيتجاب لكل صفحة في _attach_actual_labor)
+    tasks = [
+        {"description": t.get("description"), "wosequence": t.get("taskid"),
+         "status": t.get("status"), "estdur": t.get("estdur")}
+        for t in (_strip_spi(x) for x in (m.get("woactivity") or []))
+    ]
+    planned_labor = [
+        {"laborcode": p.get("laborcode") or None, "craft": p.get("craft") or None,
+         "quantity": p.get("quantity"), "laborhrs": p.get("laborhrs"),
+         "laborrate": p.get("rate"), "linecost": p.get("linecost")}
+        for p in (_strip_spi(x) for x in (m.get("wplabor") or []))
+    ]
+    actual_labor = [
+        {"laborcode": a.get("laborcode") or None,
+         "startdate": a.get("startdate") or a.get("startdateentered"),
+         "finishdate": a.get("finishdate") or a.get("finishdateentered"),
+         "regularhrs": a.get("regularhrs"), "laborrate": a.get("payrate"), "linecost": a.get("linecost")}
+        for a in (m.get("_actual_labor") or [])
+    ]
     return {
+        "tasks": tasks,
+        "planned_labor": planned_labor,
+        "actual_labor": actual_labor,
         "wonum": m.get("wonum"),
         "site_id": m.get("siteid"),
         "org_id": m.get("orgid"),
@@ -393,13 +430,20 @@ TYPE_SPECS = {
     # select: الحقول اللي map_workorder بيستخدمها بس، مش "*" - أمر شغل واحد
     # فيه حقل ليه class مكسور على سيرفر ماكسيمو (BMXAA4183E) كان بيوقع
     # الصفحة كلها والدفعة كلها وراه (اللي حصل فعليًا بعد سجل 51,500)
-    "workorders": {"os": "mxapiwo", "ref": "wonum", "map": map_workorder, "save": "save_workorder",
-                   "batch_key": "workorderid",
-                   "select": ",".join(f"spi:{f}" for f in (
+    # MXAPIWODETAIL بدل MXAPIWO: فيه التاسكات (woactivity) والعمالة المخططة
+    # (wplabor) جوه كل أمر. skip_if: صفوف التاسكات نفسها (istask) متتحفظش
+    # كأوامر شغل - موجودة جوه الأمر الأب. select_fallback: لو ماكسيمو رفض
+    # صيغة الـ select المتداخلة، بناخد كل الحقول (أبطأ بس شغال)
+    "workorders": {"os": "mxapiwodetail", "ref": "wonum", "map": map_workorder, "save": "save_workorder",
+                   "batch_key": "workorderid", "skip_if": "istask", "enrich": "_attach_actual_labor",
+                   "select": ",".join([f"spi:{f}" for f in (
                        "workorderid", "wonum", "siteid", "orgid", "description", "worktype", "status",
                        "assetnum", "location", "wopriority", "parent", "supervisor", "estdur",
                        "targstartdate", "targcompdate", "schedstart", "schedfinish",
-                       "actstart", "actfinish", "reportdate", "reportedby"))},
+                       "actstart", "actfinish", "reportdate", "reportedby", "istask")] + [
+                       "spi:woactivity{spi:taskid,spi:description,spi:status,spi:estdur}",
+                       "spi:wplabor{spi:laborcode,spi:craft,spi:laborhrs,spi:quantity,spi:rate,spi:linecost}"]),
+                   "select_fallback": "*"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
     "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan", "inline": False},
@@ -423,6 +467,7 @@ class MigrationRun:
         self.selected_types = set(selected_types)
         self.batch_size = batch_size
         self.mode = mode  # migrate | retry
+        self._select_override = {}  # os -> select بديل لو ماكسيمو رفض الـ select الأصلي
         self.state = {
             "status": "idle",  # idle | running | done
             "current_type": None,
@@ -658,7 +703,8 @@ class MigrationRun:
             try:
                 return await self.maximo.fetch_first_page(
                     spec["os"], where=where, order_by=f"+spi:{key}", page_size=page_size,
-                    inline=spec.get("inline", True), select=select or spec.get("select"))
+                    inline=spec.get("inline", True),
+                    select=select or self._select_override.get(spec["os"], spec.get("select")))
             except Exception:
                 if attempt == attempts - 1:
                     raise
@@ -714,7 +760,7 @@ class MigrationRun:
         self._init_type(type_key, self.batch_size)
         st = self.state["types"][type_key]
         st["batch"] = {"size": self.batch_size, "start_after": start_after, "last_id": start_after,
-                       "migrated_before": cp.get("migrated", 0), "finished_all": False}
+                       "migrated_before": cp.get("migrated", 0), "finished_all": False, "skipped": 0}
 
         save_fn = getattr(self.teknora, spec["save"])
         sem = asyncio.Semaphore(SAVE_CONCURRENCY)
@@ -726,6 +772,7 @@ class MigrationRun:
         fetched = 0
         last_id = start_after
         try:
+            await self._probe_select(spec, type_key)
             while fetched < self.batch_size:
                 # كل صفحة استعلام جديد "أول 500 بعد آخر ID" (keyset) - مفيش
                 # صفحات بعيدة خالص، فالطلب رقم 400 بنفس سرعة الأول
@@ -746,21 +793,27 @@ class MigrationRun:
                     err = f"ماكسيمو مش قادر يرجّع السجل ده (اتعزل واتعدّى): {reason}"
                     self._record_result(type_key, f"{key}={int(bad_id)}", err)
                     failed_items[str(int(bad_id))] = {"ref": None, "error": err[:300]}
-                errs = await asyncio.gather(*[save_limited(r) for r in page])
+                to_save = self._without_skipped(spec, page)
+                st["batch"]["skipped"] += len(page) - len(to_save)
+                if spec.get("enrich") and to_save:
+                    # لو جلب الفرعيات فشل بيرمي ويوقف الدفعة من غير ما نقطة
+                    # الاستكمال تتحرك - أحسن من إن الأوامر تتحفظ ناقصة بصمت
+                    await getattr(self, spec["enrich"])(spec, to_save)
+                errs = await asyncio.gather(*[save_limited(r) for r in to_save])
                 ok = [e is None for e in errs]
-                for r, err in zip(page, errs):
+                for r, err in zip(to_save, errs):
                     rid = str(int(r[key]))
                     if err is None:
                         failed_items.pop(rid, None)
                     else:
                         failed_items[rid] = {"ref": r.get(spec["ref"]), "error": err[:300]}
                 fetched += len(page) + len(bad)
-                if page and not any(ok):
+                if to_save and not any(ok):
                     # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
                     # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
                     # 500 سجل من غير ما يتنقلوا. ومنسجلهمش فاشلين كمان: هيتعادوا
                     # لوحدهم من نقطة الاستكمال في التشغيلة الجاية
-                    for r in page:
+                    for r in to_save:
                         failed_items.pop(str(int(r[key])), None)
                     st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
                     return
@@ -823,12 +876,20 @@ class MigrationRun:
                 return await self._save_record(type_key, spec, save_fn, client, r)
 
         try:
+            await self._probe_select(spec, type_key)
             for n in range(0, len(ids), 100):
                 chunk = ids[n:n + 100]
                 recs, unfetched = await self._fetch_exact_ids(spec, key, chunk)
                 for i, reason in unfetched:
                     self._record_result(type_key, f"{key}={i}", reason)
                     items[str(i)] = {"ref": items.get(str(i), {}).get("ref"), "error": reason[:300]}
+                kept = self._without_skipped(spec, recs)
+                for r in recs:
+                    if r not in kept:
+                        items.pop(str(int(r[key])), None)
+                recs = kept
+                if spec.get("enrich") and recs:
+                    await getattr(self, spec["enrich"])(spec, recs)
                 errs = await asyncio.gather(*[save_limited(r) for r in recs])
                 for r, err in zip(recs, errs):
                     rid = str(int(r[key]))
@@ -842,6 +903,61 @@ class MigrationRun:
         finally:
             st["retry"]["still_failing"] = len(items)
             st["total"] = st["done"]
+
+    @staticmethod
+    def _without_skipped(spec: dict, records: list) -> list:
+        skip = spec.get("skip_if")
+        return [r for r in records if not (skip and r.get(skip))] if skip else list(records)
+
+    async def _probe_select(self, spec: dict, type_key: str):
+        """بيجرّب الـ select على سجل واحد قبل الدفعة. لو ماكسيمو رفضه (صيغة
+        القوايم المتداخلة مش مدعومة في كل النسخ)، بنكمل بـ select_fallback
+        ونقول ده في التقرير بدل ما كل صفحة تفشل."""
+        sel, fallback = spec.get("select"), spec.get("select_fallback")
+        if not sel or not fallback or spec["os"] in self._select_override:
+            return
+        try:
+            await self.maximo.fetch_first_page(spec["os"], page_size=1, inline=spec.get("inline", True), select=sel)
+        except Exception as e:
+            self._select_override[spec["os"]] = fallback
+            self.state["types"][type_key]["failures"].append({
+                "ref": "-", "error": f"ماكسيمو رفض الحقول المحددة (select)، فكمّلنا بكل الحقول بدلها - أبطأ بس شغال: {_describe_exc(e)[:200]}"
+            })
+
+    async def _attach_actual_labor(self, spec: dict, parents: list):
+        """العمالة الفعلية من OSLCLABTRANS لكل أمر في الصفحة، بما فيها العمالة
+        المتسجلة على تاسكات الأمر (refwo = رقم التاسك مش الأب - عينة حقيقية
+        فيها enteredastask: true). الأوامر وتاسكاتها بتتربط بالموقع (siteid)
+        لأن رقم أمر الشغل في ماكسيمو مميز جوه الموقع بس."""
+        for p in parents:
+            p["_actual_labor"] = []
+        by_site = {}
+        for p in parents:
+            if p.get("wonum"):
+                by_site.setdefault(p.get("siteid"), []).append(p)
+
+        for site, ps in by_site.items():
+            site_cond = f'spi:siteid={json.dumps(site)} and ' if site else ""
+            owner = {p["wonum"]: p for p in ps}
+            wonums = list(owner)
+            for n in range(0, len(wonums), 100):
+                chunk = ", ".join(json.dumps(w) for w in wonums[n:n + 100])
+                tasks = await self.maximo.query_all(
+                    spec["os"], where=f"{site_cond}spi:parent in [{chunk}]",
+                    select="spi:wonum,spi:parent,spi:siteid")
+                for t in tasks:
+                    if t.get("wonum") and t.get("parent") in owner:
+                        owner.setdefault(t["wonum"], owner[t["parent"]])
+
+            refs = list(owner)
+            for n in range(0, len(refs), 100):
+                chunk = ", ".join(json.dumps(w) for w in refs[n:n + 100])
+                rows = await self.maximo.query_all(
+                    LABTRANS_OS, where=f"{site_cond}spi:refwo in [{chunk}]", select=LABTRANS_SELECT)
+                for row in rows:
+                    parent = owner.get(row.get("refwo"))
+                    if parent is not None:
+                        parent["_actual_labor"].append(row)
 
     async def _scan_ids(self, spec: dict, key: str, condition: str, upto: int) -> list:
         """كل الـ IDs اللي بتحقق شرط لحد upto - keyset، الـ ID بس (حقل واحد
