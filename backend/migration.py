@@ -15,6 +15,7 @@ Meters -> Work Orders -> Meter Readings -> Job Plans -> PM
 import asyncio
 import json
 import os
+import time
 from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -761,7 +762,10 @@ class MigrationRun:
         self._init_type(type_key, self.batch_size)
         st = self.state["types"][type_key]
         st["batch"] = {"size": self.batch_size, "start_after": start_after, "last_id": start_after,
-                       "migrated_before": cp.get("migrated", 0), "finished_all": False, "skipped": 0}
+                       "migrated_before": cp.get("migrated", 0), "finished_all": False, "skipped": 0,
+                       # ثواني في كل مرحلة - عشان لما النقل يبطأ نعرف السبب بالرقم
+                       "timing": {"maximo": 0.0, "children": 0.0, "teknora": 0.0}, "in_fallback": False}
+        timing = st["batch"]["timing"]
 
         save_fn = getattr(self.teknora, spec["save"])
         sem = asyncio.Semaphore(SAVE_CONCURRENCY)
@@ -777,7 +781,9 @@ class MigrationRun:
             while fetched < self.batch_size:
                 # كل صفحة استعلام جديد "أول 500 بعد آخر ID" (keyset) - مفيش
                 # صفحات بعيدة خالص، فالطلب رقم 400 بنفس سرعة الأول
+                t0 = time.monotonic()
                 page, bad = await self._fetch_next_page(spec, key, last_id)
+                timing["maximo"] += time.monotonic() - t0
                 if not page and not bad:
                     st["batch"]["finished_all"] = True
                     break
@@ -799,8 +805,13 @@ class MigrationRun:
                 if spec.get("enrich") and to_save:
                     # لو جلب الفرعيات فشل بيرمي ويوقف الدفعة من غير ما نقطة
                     # الاستكمال تتحرك - أحسن من إن الأوامر تتحفظ ناقصة بصمت
+                    t0 = time.monotonic()
                     await getattr(self, spec["enrich"])(spec, to_save)
+                    timing["children"] += time.monotonic() - t0
+                    st["batch"]["in_fallback"] = self._in_unsupported
+                t0 = time.monotonic()
                 errs = await asyncio.gather(*[save_limited(r) for r in to_save])
+                timing["teknora"] += time.monotonic() - t0
                 ok = [e is None for e in errs]
                 for r, err in zip(to_save, errs):
                     rid = str(int(r[key]))
@@ -971,12 +982,20 @@ class MigrationRun:
                     if "BMXAA8744E" not in str(e):
                         raise Exception(f"جلب {what} ({os_name}) فشل - where: {where[:160]} - {_describe_exc(e)}")
                     self._in_unsupported = True
-            for v in chunk:
+            # 10 طلبات مع بعض بدل واحد ورا التاني - صفحة 500 صف ممكن تبقى
+            # مئات الطلبات لو "in" مش مدعوم، ومتتالية كانت بطيئة جدًا
+            sem = asyncio.Semaphore(10)
+
+            async def one(v):
                 where = f"{prefix_cond}spi:{field}={json.dumps(v)}"
-                try:
-                    out += await self.maximo.query_all(os_name, where=where, select=select)
-                except Exception as e:
-                    raise Exception(f"جلب {what} ({os_name}) فشل - where: {where[:160]} - {_describe_exc(e)}")
+                async with sem:
+                    try:
+                        return await self.maximo.query_all(os_name, where=where, select=select)
+                    except Exception as e:
+                        raise Exception(f"جلب {what} ({os_name}) فشل - where: {where[:160]} - {_describe_exc(e)}")
+
+            for rows in await asyncio.gather(*[one(v) for v in chunk]):
+                out += rows
         return out
 
     async def _scan_ids(self, spec: dict, key: str, condition: str, upto: int) -> list:
