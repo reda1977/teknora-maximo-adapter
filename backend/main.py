@@ -124,7 +124,7 @@ async def maximo_summary():
 
 
 @app.get("/api/maximo/sample/{object_structure}")
-async def maximo_sample(object_structure: str, n: int = 3, where: str = None):
+async def maximo_sample(object_structure: str, n: int = 3, where: str = None, select: str = None):
     """أول كام سجل من أي Object Structure زي ما ماكسيمو بيرجعهم بالظبط
     (بعد شيل بادئة spi: من المستوى الأول بس) - عشان نشوف الشكل الحقيقي
     للبيانات قبل ما نكتب الماپنج، بدل ما نفترضه ونكتشف الغلط بعد نقل كامل."""
@@ -136,7 +136,11 @@ async def maximo_sample(object_structure: str, n: int = 3, where: str = None):
     try:
         # where اختياري (زي spi:wonum="WO-123") عشان نشوف سجل بعينه معروف إن
         # عليه البيانات الفرعية اللي بندوّر عليها، بدل أول سجلات عشوائية
-        return await client.fetch_first_page(object_structure, where=where, page_size=max(1, min(n, 20)))
+        # select اختياري عشان نجرّب صيغة oslc.select (بما فيها القوايم
+        # المتداخلة زي spi:woactivity{...}) على سيرفر ماكسيمو الحقيقي قبل ما
+        # النقل نفسه يعتمد عليها
+        return await client.fetch_first_page(object_structure, where=where, select=select,
+                                             page_size=max(1, min(n, 20)))
     except Exception as e:
         raise HTTPException(status_code=502, detail=_describe_exc(e))
 
