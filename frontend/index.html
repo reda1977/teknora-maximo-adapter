@@ -677,7 +677,9 @@ function renderProgress(state) {
 // الوقت في كل مرحلة + السرعة - عشان لو النقل بطيء نعرف السبب بالرقم مش بالتخمين
 function timingText(tp) {
   const tm = tp.batch.timing;
-  const total = tm.maximo + tm.children + tm.teknora;
+  // elapsed = الوقت الفعلي. المراحل بقت متداخلة (الصفحة الجاية بتتجاب من
+  // ماكسيمو وإحنا بنحفظ الحالية)، فجمعها كان هيقلل السرعة الظاهرة
+  const total = tm.elapsed != null ? tm.elapsed : tm.maximo + tm.children + tm.teknora;
   const perMin = total > 0 ? Math.round((tp.done + (tp.batch.skipped || 0)) / (total / 60)) : 0;
   const mins = s => (s / 60).toFixed(1);
   let txt = t('timing_line')(mins(tm.maximo), mins(tm.children), mins(tm.teknora), fmt(perMin));

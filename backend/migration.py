@@ -774,41 +774,59 @@ class MigrationRun:
             async with sem:
                 return await self._save_record(type_key, spec, save_fn, client, r)
 
+        async def prepare(after_id):
+            """جلب صفحة + فحصها + جلب فرعياتها (تاسكات وعمالة). بيشتغل للصفحة
+            الجاية في نفس الوقت اللي الصفحة الحالية بتتحفظ فيه في تكنورا."""
+            t0 = time.monotonic()
+            # كل صفحة استعلام جديد "أول 500 بعد آخر ID" (keyset) - مفيش
+            # صفحات بعيدة خالص، فالطلب رقم 400 بنفس سرعة الأول
+            page, bad = await self._fetch_next_page(spec, key, after_id)
+            timing["maximo"] += time.monotonic() - t0
+            ids = [r.get(key) for r in page]
+            if any(not isinstance(i, (int, float)) for i in ids):
+                raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
+            if ids != sorted(ids):
+                # لو ماكسيمو تجاهل الترتيب، "بعد آخر ID" هيعدّي سجلات بصمت -
+                # نوقف بوضوح أحسن من فقد بيانات
+                raise Exception(f"ماكسيمو رجّع السجلات مش مترتبة بالـ {key} - وقفنا عشان منعدّيش سجلات")
+            to_save = self._without_skipped(spec, page)
+            if spec.get("enrich") and to_save:
+                # لو جلب الفرعيات فشل بيرمي ويوقف الدفعة من غير ما نقطة
+                # الاستكمال تتحرك - أحسن من إن الأوامر تتحفظ ناقصة بصمت
+                t0 = time.monotonic()
+                await getattr(self, spec["enrich"])(spec, to_save)
+                timing["children"] += time.monotonic() - t0
+                st["batch"]["in_fallback"] = self._in_unsupported
+            return page, bad, to_save, ids
+
         fetched = 0
         last_id = start_after
+        started = time.monotonic()
+        next_task = None
         try:
             await self._probe_select(spec, type_key)
-            while fetched < self.batch_size:
-                # كل صفحة استعلام جديد "أول 500 بعد آخر ID" (keyset) - مفيش
-                # صفحات بعيدة خالص، فالطلب رقم 400 بنفس سرعة الأول
-                t0 = time.monotonic()
-                page, bad = await self._fetch_next_page(spec, key, last_id)
-                timing["maximo"] += time.monotonic() - t0
+            next_task = asyncio.create_task(prepare(last_id))
+            while True:
+                # نتيجة الصفحة دي (أو خطأها) بتتاخد هنا، بعد ما الصفحة اللي قبلها
+                # اتحفظت ونقطتها اتسجلت - فأي فشل في الجلب مبيأثرش على اللي قبله
+                page, bad, to_save, ids = await next_task
+                next_task = None
                 if not page and not bad:
                     st["batch"]["finished_all"] = True
                     break
 
-                ids = [r.get(key) for r in page]
-                if any(not isinstance(i, (int, float)) for i in ids):
-                    raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
-                if ids != sorted(ids):
-                    # لو ماكسيمو تجاهل الترتيب، "بعد آخر ID" هيعدّي سجلات
-                    # بصمت - نوقف بوضوح أحسن من فقد بيانات
-                    raise Exception(f"ماكسيمو رجّع السجلات مش مترتبة بالـ {key} - وقفنا عشان منعدّيش سجلات")
+                page_last = int(max(ids + [b for b, _ in bad]))
+                fetched += len(page) + len(bad)
+                if fetched < self.batch_size:
+                    # الصفحة الجاية بتتجاب من ماكسيمو وإحنا بنحفظ دي في تكنورا
+                    next_task = asyncio.create_task(prepare(page_last))
 
                 for bad_id, reason in bad:
                     err = f"ماكسيمو مش قادر يرجّع السجل ده (اتعزل واتعدّى): {reason}"
                     self._record_result(type_key, f"{key}={int(bad_id)}", err)
                     failed_items[str(int(bad_id))] = {"ref": None, "error": err[:300]}
-                to_save = self._without_skipped(spec, page)
                 st["batch"]["skipped"] += len(page) - len(to_save)
-                if spec.get("enrich") and to_save:
-                    # لو جلب الفرعيات فشل بيرمي ويوقف الدفعة من غير ما نقطة
-                    # الاستكمال تتحرك - أحسن من إن الأوامر تتحفظ ناقصة بصمت
-                    t0 = time.monotonic()
-                    await getattr(self, spec["enrich"])(spec, to_save)
-                    timing["children"] += time.monotonic() - t0
-                    st["batch"]["in_fallback"] = self._in_unsupported
+
                 t0 = time.monotonic()
                 errs = await asyncio.gather(*[save_limited(r) for r in to_save])
                 timing["teknora"] += time.monotonic() - t0
@@ -819,18 +837,18 @@ class MigrationRun:
                         failed_items.pop(rid, None)
                     else:
                         failed_items[rid] = {"ref": r.get(spec["ref"]), "error": err[:300]}
-                fetched += len(page) + len(bad)
                 if to_save and not any(ok):
                     # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
                     # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
                     # 500 سجل من غير ما يتنقلوا. ومنسجلهمش فاشلين كمان: هيتعادوا
-                    # لوحدهم من نقطة الاستكمال في التشغيلة الجاية
+                    # لوحدهم من نقطة الاستكمال في التشغيلة الجاية. الصفحة اللي
+                    # كانت بتتجاب في الخلفية بتتلغي في finally
                     for r in to_save:
                         failed_items.pop(str(int(r[key])), None)
                     st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
                     return
 
-                last_id = int(max(ids + [b for b, _ in bad]))
+                last_id = page_last
                 cp = {
                     "last_id": last_id,
                     "migrated": cp.get("migrated", 0) + sum(ok),
@@ -843,12 +861,23 @@ class MigrationRun:
                 save_failed(cp_key, fail_entry)
                 save_checkpoint(cp_key, cp)
                 st["batch"]["last_id"] = last_id
+                timing["elapsed"] = time.monotonic() - started
+                if next_task is None:
+                    break
             cp["batches"] = cp.get("batches", 0) + 1
             if fetched:
                 save_checkpoint(cp_key, cp)
         except Exception as e:
             st["failures"].append({"ref": "-", "error": f"تعذر جلب البيانات من Maximo: {_describe_exc(e)}"})
         finally:
+            if next_task is not None and not next_task.done():
+                next_task.cancel()
+            if next_task is not None:
+                try:
+                    await next_task
+                except BaseException:
+                    pass
+            timing["elapsed"] = time.monotonic() - started
             st["total"] = st["done"]
 
     async def _retry_failed(self, type_key: str, client: httpx.AsyncClient):
