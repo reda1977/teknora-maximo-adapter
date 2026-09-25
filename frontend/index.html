@@ -151,6 +151,7 @@
   .retry-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--warn); font-weight: 600; }
   .retry-btn { padding: 6px 12px; font-size: 12.5px; }
   .batch-done { margin-bottom: 16px; }
+  .timing-line { margin-top: 6px; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
   .type-count.err { color: var(--danger); }
 
   .progress-row { margin-bottom: 20px; }
@@ -399,6 +400,8 @@ const I18N = {
     batch_done_all: 'خلصت كل أوامر الشغل - مفيش دفعات تانية',
     seq_summary: (seqs, pms, withSeq) => `ماكسيمو رجّع ${seqs} سيكونس و ${pms} PM، منهم ${withSeq} PM ليهم سيكونس واتبعتوا`,
     tasks_skipped: (n) => `(${n} صف تاسك متنقلوش كأوامر شغل لوحدهم - اتنقلوا كتاسكات جوه أوامرهم الأب)`,
+    timing_line: (mx, ch, tk, perMin) => `الوقت: صفحات ماكسيمو ${mx} د · التاسكات والعمالة ${ch} د · الحفظ في تكنورا ${tk} د · السرعة ${perMin} صف/دقيقة`,
+    in_fallback_note: '(ماكسيمو مش بيقبل البحث بقايمة "in" - بنسأل عن كل أمر لوحده، وده أبطأ)',
     retry_btn: 'إعادة الفاشل',
     retry_pending: (n, legacy) => legacy
       ? `${n} سجل فاشل مستني إعادة، وكمان أوامر COMP من الدفعات اللي قبل تسجيل الفشل (هيتدوّر عليهم أول مرة)`
@@ -441,6 +444,8 @@ const I18N = {
     batch_done_all: 'All work orders migrated - no batches left',
     seq_summary: (seqs, pms, withSeq) => `Maximo returned ${seqs} sequences and ${pms} PMs; ${withSeq} PMs have sequences and were sent`,
     tasks_skipped: (n) => `(${n} task rows weren't migrated as separate work orders - they went in as tasks inside their parent work orders)`,
+    timing_line: (mx, ch, tk, perMin) => `Time: Maximo pages ${mx} min · tasks & labor ${ch} min · Teknora saves ${tk} min · speed ${perMin} rows/min`,
+    in_fallback_note: '(Maximo rejects "in" list queries - looking up each work order separately, which is slower)',
     retry_btn: 'Retry failed',
     retry_pending: (n, legacy) => legacy
       ? `${n} failed records waiting to be retried, plus COMP work orders from batches before failures were tracked (looked up on the first retry)`
@@ -663,9 +668,21 @@ function renderProgress(state) {
         <span class="stats">${t('stats_template')(fmt(tp.done), fmt(tp.total), fmt(tp.success), fmt(tp.failed))}</span>
       </div>
       <div class="bar-track"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>
+      ${tp.batch && tp.batch.timing ? `<div class="timing-line">${esc(timingText(tp))}</div>` : ''}
     `;
     container.appendChild(div);
   }
+}
+
+// الوقت في كل مرحلة + السرعة - عشان لو النقل بطيء نعرف السبب بالرقم مش بالتخمين
+function timingText(tp) {
+  const tm = tp.batch.timing;
+  const total = tm.maximo + tm.children + tm.teknora;
+  const perMin = total > 0 ? Math.round((tp.done + (tp.batch.skipped || 0)) / (total / 60)) : 0;
+  const mins = s => (s / 60).toFixed(1);
+  let txt = t('timing_line')(mins(tm.maximo), mins(tm.children), mins(tm.teknora), fmt(perMin));
+  if (tp.batch.in_fallback) txt += ' ' + t('in_fallback_note');
+  return txt;
 }
 
 async function pollProgress() {
@@ -739,7 +756,8 @@ function renderReport(state) {
     const note = document.createElement('div');
     note.className = 'msg success batch-done';
     const skippedNote = b.skipped ? ' ' + t('tasks_skipped')(fmt(b.skipped)) : '';
-    note.innerHTML = `<span>${esc(t('types')[key])}: ${esc((b.finished_all ? t('batch_done_all') : t('batch_more')) + skippedNote)}</span>`;
+    const timingNote = b.timing ? ' - ' + timingText(state.types[key]) : '';
+    note.innerHTML = `<span>${esc(t('types')[key])}: ${esc((b.finished_all ? t('batch_done_all') : t('batch_more')) + skippedNote + timingNote)}</span>`;
     failuresEl.appendChild(note);
   }
   if (state.fatal_error) {
