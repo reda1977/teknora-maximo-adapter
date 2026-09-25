@@ -468,6 +468,7 @@ class MigrationRun:
         self.batch_size = batch_size
         self.mode = mode  # migrate | retry
         self._select_override = {}  # os -> select بديل لو ماكسيمو رفض الـ select الأصلي
+        self._in_unsupported = False  # ماكسيمو رفض "in [..]" (BMXAA8744E) -> قيمة قيمة
         self.state = {
             "status": "idle",  # idle | running | done
             "current_type": None,
@@ -939,25 +940,44 @@ class MigrationRun:
         for site, ps in by_site.items():
             site_cond = f'spi:siteid={json.dumps(site)} and ' if site else ""
             owner = {p["wonum"]: p for p in ps}
-            wonums = list(owner)
-            for n in range(0, len(wonums), 100):
-                chunk = ", ".join(json.dumps(w) for w in wonums[n:n + 100])
-                tasks = await self.maximo.query_all(
-                    spec["os"], where=f"{site_cond}spi:parent in [{chunk}]",
-                    select="spi:wonum,spi:parent,spi:siteid")
-                for t in tasks:
-                    if t.get("wonum") and t.get("parent") in owner:
-                        owner.setdefault(t["wonum"], owner[t["parent"]])
+            tasks = await self._query_in(spec["os"], "parent", list(owner), site_cond,
+                                         "spi:wonum,spi:parent,spi:siteid", "تاسكات أوامر الشغل")
+            for t in tasks:
+                if t.get("wonum") and t.get("parent") in owner:
+                    owner.setdefault(t["wonum"], owner[t["parent"]])
 
-            refs = list(owner)
-            for n in range(0, len(refs), 100):
-                chunk = ", ".join(json.dumps(w) for w in refs[n:n + 100])
-                rows = await self.maximo.query_all(
-                    LABTRANS_OS, where=f"{site_cond}spi:refwo in [{chunk}]", select=LABTRANS_SELECT)
-                for row in rows:
-                    parent = owner.get(row.get("refwo"))
-                    if parent is not None:
-                        parent["_actual_labor"].append(row)
+            rows = await self._query_in(LABTRANS_OS, "refwo", list(owner), site_cond,
+                                        LABTRANS_SELECT, "العمالة الفعلية")
+            for row in rows:
+                parent = owner.get(row.get("refwo"))
+                if parent is not None:
+                    parent["_actual_labor"].append(row)
+
+    async def _query_in(self, os_name: str, field: str, values: list, prefix_cond: str,
+                        select: str, what: str) -> list:
+        """كل سجلات os_name اللي field بتاعها واحد من values. "in [..]" الأول
+        (مجموعات 100)؛ لو ماكسيمو رفض الصيغة (BMXAA8744E - اتقابلت فعلاً)،
+        بنسأل عن كل قيمة لوحدها بـ "=" ونفتكر ده لباقي التشغيلة. أي فشل
+        بيطلع ومعاه نص البحث بالظبط في أول الرسالة عشان ميتقطعش."""
+        out = []
+        for n in range(0, len(values), 100):
+            chunk = values[n:n + 100]
+            if not self._in_unsupported:
+                where = f"{prefix_cond}spi:{field} in [{','.join(json.dumps(v) for v in chunk)}]"
+                try:
+                    out += await self.maximo.query_all(os_name, where=where, select=select)
+                    continue
+                except Exception as e:
+                    if "BMXAA8744E" not in str(e):
+                        raise Exception(f"جلب {what} ({os_name}) فشل - where: {where[:160]} - {_describe_exc(e)}")
+                    self._in_unsupported = True
+            for v in chunk:
+                where = f"{prefix_cond}spi:{field}={json.dumps(v)}"
+                try:
+                    out += await self.maximo.query_all(os_name, where=where, select=select)
+                except Exception as e:
+                    raise Exception(f"جلب {what} ({os_name}) فشل - where: {where[:160]} - {_describe_exc(e)}")
+        return out
 
     async def _scan_ids(self, spec: dict, key: str, condition: str, upto: int) -> list:
         """كل الـ IDs اللي بتحقق شرط لحد upto - keyset، الـ ID بس (حقل واحد
