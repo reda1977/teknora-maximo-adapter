@@ -148,6 +148,8 @@
   .link-btn { background: none; border: none; padding: 0; color: var(--accent); font-weight: 700; font-size: 12.5px; cursor: pointer; }
   .link-btn:hover { text-decoration: underline; }
   .batch-tag { color: var(--text-dim); font-weight: 600; font-size: 12px; }
+  .retry-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--warn); font-weight: 600; }
+  .retry-btn { padding: 6px 12px; font-size: 12.5px; }
   .batch-done { margin-bottom: 16px; }
   .type-count.err { color: var(--danger); }
 
@@ -396,6 +398,12 @@ const I18N = {
     batch_progress_label: (size, after) => after == null ? `(دفعة ${size} من البداية)` : `(دفعة ${size} بعد ID ${after})`,
     batch_done_all: 'خلصت كل أوامر الشغل - مفيش دفعات تانية',
     seq_summary: (seqs, pms, withSeq) => `ماكسيمو رجّع ${seqs} سيكونس و ${pms} PM، منهم ${withSeq} PM ليهم سيكونس واتبعتوا`,
+    retry_btn: 'إعادة الفاشل',
+    retry_pending: (n, legacy) => legacy
+      ? `${n} سجل فاشل مستني إعادة، وكمان أوامر COMP من الدفعات اللي قبل تسجيل الفشل (هيتدوّر عليهم أول مرة)`
+      : `${n} سجل فاشل مستني إعادة`,
+    retry_tag: '(إعادة الفاشل)',
+    retry_summary: (attempted, ok, still, legacy) => `اتحاول تاني ${attempted} سجل (منهم ${legacy} أمر COMP قديم) - نجح ${ok}، ولسه فاشل ${still}`,
     batch_more: 'الدفعة دي خلصت. شغّل النقل تاني عشان الدفعة الجاية تكمل من حيث وقفت',
     th_type: 'النوع', th_ref: 'المرجع', th_reason: 'سبب الفشل',
     all_success: 'كل السجلات اتنقلت بنجاح من غير أي فشل 🎉',
@@ -431,6 +439,12 @@ const I18N = {
     batch_progress_label: (size, after) => after == null ? `(batch of ${size} from the start)` : `(batch of ${size} after ID ${after})`,
     batch_done_all: 'All work orders migrated - no batches left',
     seq_summary: (seqs, pms, withSeq) => `Maximo returned ${seqs} sequences and ${pms} PMs; ${withSeq} PMs have sequences and were sent`,
+    retry_btn: 'Retry failed',
+    retry_pending: (n, legacy) => legacy
+      ? `${n} failed records waiting to be retried, plus COMP work orders from batches before failures were tracked (looked up on the first retry)`
+      : `${n} failed records waiting to be retried`,
+    retry_tag: '(retrying failed)',
+    retry_summary: (attempted, ok, still, legacy) => `Retried ${attempted} records (${legacy} of them old COMP work orders) - ${ok} succeeded, ${still} still failing`,
     batch_more: 'This batch is done. Run the migration again to continue with the next batch from where it stopped',
     th_type: 'Type', th_ref: 'Reference', th_reason: 'Failure reason',
     all_success: 'All records migrated successfully with no failures 🎉',
@@ -575,9 +589,14 @@ function batchInfoHtml(key, batch) {
   const note = cp
     ? t('batch_note_progress')(fmt(cp.migrated), fmt(cp.failed), cp.batches || 0, cp.last_id)
     : t('batch_note_new');
+  const retryNote = (batch.pending_retry || batch.legacy_pending)
+    ? `<span class="retry-line">${t('retry_pending')(fmt(batch.pending_retry), batch.legacy_pending)}
+         <button type="button" class="secondary retry-btn" onclick="retryFailed('${key}')">${t('retry_btn')}</button></span>`
+    : '';
   return `
     <div class="batch-info">
       <span>${note}</span>
+      ${retryNote}
       <span class="batch-controls">
         <label class="batch-size">${t('batch_size_label')}
           <input type="number" id="batch-size" min="1000" step="1000" value="${batch.batch_size}" dir="ltr">
@@ -585,6 +604,15 @@ function batchInfoHtml(key, batch) {
         ${cp ? `<button type="button" class="link-btn" onclick="resetBatch('${key}')">${t('batch_reset_btn')}</button>` : ''}
       </span>
     </div>`;
+}
+
+async function retryFailed(key) {
+  const res = await fetch(API + '/api/migrate/retry/' + key, { method: 'POST' });
+  const d = await res.json();
+  if (!res.ok) { alert(d.detail || t('start_failed_alert')); return; }
+  showStep(4);
+  pollTimer = setInterval(pollProgress, 1000);
+  pollProgress();
 }
 
 async function resetBatch(key) {
@@ -628,7 +656,7 @@ function renderProgress(state) {
       <div class="progress-head">
         <div class="left">
           <div class="type-icon">${iconSvg(key)}</div>
-          <span class="label">${t('types')[key]}${tp.batch ? ` <span class="batch-tag">${t('batch_progress_label')(fmt(tp.batch.size), tp.batch.start_after)}</span>` : ''}</span>
+          <span class="label">${t('types')[key]}${tp.batch ? ` <span class="batch-tag">${t('batch_progress_label')(fmt(tp.batch.size), tp.batch.start_after)}</span>` : ''}${tp.retry ? ` <span class="batch-tag">${t('retry_tag')}</span>` : ''}</span>
         </div>
         <span class="stats">${t('stats_template')(fmt(tp.done), fmt(tp.total), fmt(tp.success), fmt(tp.failed))}</span>
       </div>
@@ -686,6 +714,15 @@ function renderReport(state) {
   }
 
   failuresEl.innerHTML = '';
+  for (const key of state.order) {
+    const rt = (state.types[key] || {}).retry;
+    if (!rt || rt.attempted == null) continue;
+    const tp = state.types[key];
+    const note = document.createElement('div');
+    note.className = 'msg success batch-done';
+    note.innerHTML = `<span>${esc(t('types')[key])}: ${esc(t('retry_summary')(fmt(rt.attempted), fmt(tp.success), fmt(rt.still_failing), fmt(rt.legacy_added)))}</span>`;
+    failuresEl.appendChild(note);
+  }
   for (const key of state.order) {
     const s = (state.types[key] || {}).summary;
     if (!s) continue;
