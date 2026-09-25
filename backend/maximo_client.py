@@ -155,11 +155,11 @@ class MaximoClient:
         return []
 
     async def query_all(self, object_structure: str, where: str = None, page_size: int = 500,
-                        concurrency: int = 10, inline: bool = True) -> list:
+                        concurrency: int = 10, inline: bool = True, select: str = None) -> list:
         """كل السجلات مرة واحدة - للأنواع العادية الصغيرة نسبيًا."""
         out = []
         async with aclosing(self.iter_pages(object_structure, where=where, page_size=page_size,
-                                            concurrency=concurrency, inline=inline)) as pages:
+                                            concurrency=concurrency, inline=inline, select=select)) as pages:
             async for page in pages:
                 out.extend(page)
         return out
