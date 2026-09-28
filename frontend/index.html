@@ -401,6 +401,7 @@ const I18N = {
     seq_summary: (seqs, pms, withSeq) => `ماكسيمو رجّع ${seqs} سيكونس و ${pms} PM، منهم ${withSeq} PM ليهم سيكونس واتبعتوا`,
     tasks_skipped: (n) => `(${n} صف تاسك متنقلوش كأوامر شغل لوحدهم - اتنقلوا كتاسكات جوه أوامرهم الأب)`,
     timing_line: (mx, ch, tk, perMin) => `الوقت: صفحات ماكسيمو ${mx} د · التاسكات والعمالة ${ch} د · الحفظ في تكنورا ${tk} د · السرعة ${perMin} صف/دقيقة`,
+    timing_line_stream: (wait, tk, buf, perMin) => `الوقت: استنينا ماكسيمو ${wait} د · الحفظ في تكنورا ${tk} د · البفر ${buf} صفحة جاهزة · السرعة ${perMin} صف/دقيقة`,
     in_fallback_note: '(ماكسيمو مش بيقبل البحث بقايمة "in" - بنسأل عن كل أمر لوحده، وده أبطأ)',
     bulk_note: '(حفظ جماعي: صفحة كاملة في طلب واحد)',
     already_closed: (n) => `(${n} أمر كانوا متنقلين قبل كده ومقفولين CLOSE - اتسابوا زي ما هم واتحسبوا ناجحين)`,
@@ -447,6 +448,7 @@ const I18N = {
     seq_summary: (seqs, pms, withSeq) => `Maximo returned ${seqs} sequences and ${pms} PMs; ${withSeq} PMs have sequences and were sent`,
     tasks_skipped: (n) => `(${n} task rows weren't migrated as separate work orders - they went in as tasks inside their parent work orders)`,
     timing_line: (mx, ch, tk, perMin) => `Time: Maximo pages ${mx} min · tasks & labor ${ch} min · Teknora saves ${tk} min · speed ${perMin} rows/min`,
+    timing_line_stream: (wait, tk, buf, perMin) => `Time: waiting for Maximo ${wait} min · Teknora saves ${tk} min · buffer ${buf} pages ready · speed ${perMin} rows/min`,
     in_fallback_note: '(Maximo rejects "in" list queries - looking up each work order separately, which is slower)',
     bulk_note: '(bulk save: one request per page)',
     already_closed: (n) => `(${n} work orders were already migrated and CLOSED - left as they are and counted as ok)`,
@@ -686,7 +688,10 @@ function timingText(tp) {
   const total = tm.elapsed != null ? tm.elapsed : tm.maximo + tm.children + tm.teknora;
   const perMin = total > 0 ? Math.round((tp.done + (tp.batch.skipped || 0)) / (total / 60)) : 0;
   const mins = s => (s / 60).toFixed(1);
-  let txt = t('timing_line')(mins(tm.maximo), mins(tm.children), mins(tm.teknora), fmt(perMin));
+  // wait = الحفظ كان واقف مستني ماكسيمو (البفر فاضي) - ده التوقف اللي بيبان
+  let txt = tm.wait != null
+    ? t('timing_line_stream')(mins(tm.wait), mins(tm.teknora), fmt(tp.batch.buffer || 0), fmt(perMin))
+    : t('timing_line')(mins(tm.maximo), mins(tm.children), mins(tm.teknora), fmt(perMin));
   if (tp.batch.in_fallback) txt += ' ' + t('in_fallback_note');
   if (tp.batch.bulk) txt += ' ' + t('bulk_note');
   if (tp.already_closed) txt += ' ' + t('already_closed')(fmt(tp.already_closed));
