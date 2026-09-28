@@ -23,7 +23,7 @@ from pathlib import Path
 import httpx
 
 from maximo_client import MaximoClient
-from teknora_client import TeknoraClient
+from teknora_client import BulkUnavailable, TeknoraClient
 
 # نقطة الاستكمال بتاعة الأنواع المقسمة على دفعات (أوامر الشغل) بتتحفظ على
 # الديسك مش في الذاكرة - عشان تعيش بعد أي restart للكونتينر (docker-compose
@@ -32,6 +32,8 @@ DATA_DIR = Path(os.environ.get("MIGRATOR_DATA_DIR", Path(__file__).resolve().par
 CHECKPOINT_FILE = DATA_DIR / "checkpoints.json"
 DEFAULT_BATCH_SIZE = 100_000
 SAVE_CONCURRENCY = 8
+# سجلات في طلب الحفظ الجماعي الواحد (تكنورا بيقبل لحد 1000)
+BULK_SAVE_SIZE = 500
 
 # العمالة الفعلية لأوامر الشغل - الاسم والحقول من عينة حقيقية
 # (/api/maximo/sample/oslclabtrans): MXLABTRANS مش موجود في النسخة دي
@@ -479,6 +481,7 @@ TYPE_SPECS = {
     # صيغة الـ select المتداخلة، بناخد كل الحقول (أبطأ بس شغال)
     "workorders": {"os": "mxapiwodetail", "ref": "wonum", "map": map_workorder, "save": "save_workorder",
                    "batch_key": "workorderid", "skip_if": "istask", "enrich": "_attach_actual_labor",
+                   "bulk_save": "save_workorders_bulk",
                    "select": ",".join([f"spi:{f}" for f in (
                        "workorderid", "wonum", "siteid", "orgid", "description", "worktype", "status",
                        "assetnum", "location", "wopriority", "parent", "supervisor", "estdur",
@@ -517,6 +520,7 @@ class MigrationRun:
         self.mode = mode  # migrate | retry
         self._select_override = {}  # os -> select بديل لو ماكسيمو رفض الـ select الأصلي
         self._in_unsupported = False  # ماكسيمو رفض "in [..]" (BMXAA8744E) -> قيمة قيمة
+        self._bulk_unavailable = None  # سبب إن الحفظ الجماعي مش متاح في تكنورا -> أمر أمر
         self.state = {
             "status": "idle",  # idle | running | done
             "current_type": None,
@@ -567,8 +571,7 @@ class MigrationRun:
             self.state["status"] = "done"
             self.state["finished_at"] = datetime.now(timezone.utc).isoformat()
 
-    async def _save_record(self, type_key: str, spec: dict, save_fn, client: httpx.AsyncClient, r: dict):
-        """None لو اتحفظ، أو نص الخطأ لو فشل."""
+    async def _resolve_refs(self, r: dict):
         # بعض الحقول (زي "location" في oslclocationmeter) بترجع كمرجع
         # {"rdf:resource": "..."} لسجل تاني بدل القيمة الفعلية - لازم نتبعها
         # ونستبدلها قبل التحويل، وإلا هترسل كـ dict لتكنورا وترجع 422
@@ -578,6 +581,60 @@ class MigrationRun:
                 resolved = await self.maximo.resolve_ref(val)
                 r[key] = resolved.get(key) or resolved.get("location") or resolved.get("assetnum")
 
+    async def _save_many(self, type_key: str, spec: dict, client: httpx.AsyncClient, records: list) -> list:
+        """خطأ لكل سجل (None = اتحفظ) بنفس الترتيب. جماعي لو النوع ليه
+        bulk_save وتكنورا بيدعمه، وإلا أمر أمر بالتوازي."""
+        if spec.get("bulk_save") and self._bulk_unavailable is None:
+            try:
+                return await self._save_bulk(type_key, spec, client, records)
+            except BulkUnavailable as e:
+                self._bulk_unavailable = str(e)
+                self.state["types"][type_key]["failures"].append({
+                    "ref": "-", "error": f"الحفظ الجماعي مش متاح في تكنورا ({e}) - رجعنا للحفظ أمر أمر (أبطأ بكتير)"})
+        save_fn = getattr(self.teknora, spec["save"])
+        sem = asyncio.Semaphore(SAVE_CONCURRENCY)
+
+        async def save_limited(r):
+            async with sem:
+                return await self._save_record(type_key, spec, save_fn, client, r)
+
+        return await asyncio.gather(*[save_limited(r) for r in records])
+
+    async def _save_bulk(self, type_key: str, spec: dict, client: httpx.AsyncClient, records: list) -> list:
+        errs = [None] * len(records)
+        payloads, idx = [], []
+        for n, r in enumerate(records):
+            await self._resolve_refs(r)
+            try:
+                payloads.append(spec["map"](r))
+                idx.append(n)
+            except Exception as e:
+                errs[n] = _describe_exc(e)
+        save_fn = getattr(self.teknora, spec["bulk_save"])
+        for k in range(0, len(payloads), BULK_SAVE_SIZE):
+            chunk = payloads[k:k + BULK_SAVE_SIZE]
+            try:
+                results = (await save_fn(client, chunk)).get("results") or []
+                if len(results) != len(chunk):
+                    raise Exception(f"تكنورا رجّع {len(results)} نتيجة لـ {len(chunk)} سجل")
+                for j, out in enumerate(results):
+                    errs[idx[k + j]] = out.get("error")
+            except BulkUnavailable:
+                if k == 0:
+                    raise  # لسه مفيش حاجة اتسجلت - نرجع لأمر أمر من الأول
+                for j in range(len(chunk)):
+                    errs[idx[k + j]] = "الحفظ الجماعي بقى مش متاح في نص الصفحة"
+            except Exception as e:
+                # الطلب كله فشل (تكنورا واقع، مهلة...) - كل سجلات الجزء ده فاشلة
+                for j in range(len(chunk)):
+                    errs[idx[k + j]] = _describe_exc(e)
+        for r, err in zip(records, errs):
+            self._record_result(type_key, r.get(spec["ref"]), err)
+        return errs
+
+    async def _save_record(self, type_key: str, spec: dict, save_fn, client: httpx.AsyncClient, r: dict):
+        """None لو اتحفظ، أو نص الخطأ لو فشل."""
+        await self._resolve_refs(r)
         ref = r.get(spec["ref"])
         try:
             await save_fn(client, spec["map"](r))
@@ -815,13 +872,6 @@ class MigrationRun:
                        "timing": {"maximo": 0.0, "children": 0.0, "teknora": 0.0}, "in_fallback": False}
         timing = st["batch"]["timing"]
 
-        save_fn = getattr(self.teknora, spec["save"])
-        sem = asyncio.Semaphore(SAVE_CONCURRENCY)
-
-        async def save_limited(r):
-            async with sem:
-                return await self._save_record(type_key, spec, save_fn, client, r)
-
         async def prepare(after_id):
             """جلب صفحة + فحصها + جلب فرعياتها (تاسكات وعمالة). بيشتغل للصفحة
             الجاية في نفس الوقت اللي الصفحة الحالية بتتحفظ فيه في تكنورا."""
@@ -876,8 +926,9 @@ class MigrationRun:
                 st["batch"]["skipped"] += len(page) - len(to_save)
 
                 t0 = time.monotonic()
-                errs = await asyncio.gather(*[save_limited(r) for r in to_save])
+                errs = await self._save_many(type_key, spec, client, to_save)
                 timing["teknora"] += time.monotonic() - t0
+                st["batch"]["bulk"] = bool(spec.get("bulk_save")) and self._bulk_unavailable is None
                 ok = [e is None for e in errs]
                 for r, err in zip(to_save, errs):
                     rid = str(int(r[key]))
@@ -957,12 +1008,6 @@ class MigrationRun:
         ids = sorted(int(i) for i in items)
         st["total"] = len(ids)
         st["retry"]["attempted"] = len(ids)
-        save_fn = getattr(self.teknora, spec["save"])
-        sem = asyncio.Semaphore(SAVE_CONCURRENCY)
-
-        async def save_limited(r):
-            async with sem:
-                return await self._save_record(type_key, spec, save_fn, client, r)
 
         try:
             await self._probe_select(spec, type_key)
@@ -979,7 +1024,7 @@ class MigrationRun:
                 recs = kept
                 if spec.get("enrich") and recs:
                     await getattr(self, spec["enrich"])(spec, recs)
-                errs = await asyncio.gather(*[save_limited(r) for r in recs])
+                errs = await self._save_many(type_key, spec, client, recs)
                 for r, err in zip(recs, errs):
                     rid = str(int(r[key]))
                     if err is None:
