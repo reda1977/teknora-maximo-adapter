@@ -178,19 +178,24 @@ def map_asset(m: dict) -> dict:
     }
 
 
-def _sequence_rows(children: list) -> list:
-    """صفوف السيكونس الفعلية من سجلات PMSEQUENCE_LOAD. السجل ممكن يكون
-    سيكونس واحد مسطّح (فيه jpnum مباشرة)، أو سجل PM والسيكونس متداخل جوّاه
-    تحت "pmsequence". المتداخل ليه الأولوية - لو السجل هو الـ PM نفسه، الـ
-    jpnum اللي في مستواه الأول هو خطة الـ PM الأساسية مش سيكونس."""
+def _child_rows(children: list, nested_keys: tuple, required: tuple) -> list:
+    """صفوف فرعية فعلية من Object Structure منفصل (زي PMSEQUENCE_LOAD أو
+    JOBPLANLABOR_LOAD). السجل ممكن يكون صف فرعي مسطّح، أو سجل الأب نفسه
+    والصفوف متداخلة جوّاه (اللي طلع فعليًا في PMSEQUENCE_LOAD). المتداخل
+    ليه الأولوية - لو السجل هو الأب، حقوله في المستوى الأول بتاعة الأب مش
+    صف فرعي. الصف بيتقبل لو فيه حقل واحد على الأقل من required."""
     rows = []
     for c in children:
-        nested = [n for k in ("pmsequence", "pmsequences") for n in (c.get(k) or []) if isinstance(n, dict)]
+        nested = [n for k in nested_keys for n in (c.get(k) or []) if isinstance(n, dict)]
         if nested:
-            rows.extend(s for s in (_strip_spi(n) for n in nested) if s.get("jpnum"))
-        elif c.get("jpnum"):
+            rows.extend(r for r in (_strip_spi(n) for n in nested) if any(r.get(f) for f in required))
+        elif any(c.get(f) for f in required):
             rows.append(c)
     return rows
+
+
+def _sequence_rows(children: list) -> list:
+    return _child_rows(children, ("pmsequence", "pmsequences"), ("jpnum",))
 
 
 def _find_sequence_list(d, depth: int = 0):
@@ -220,11 +225,12 @@ def map_jobplan(m: dict) -> dict:
     # الحقول جوه كل عنصر لازم تطابق أعمدة JPTask (task_sequence, description,
     # nested_jpnum, duration, meternum) - jpnum بيتضاف تلقائي من السيرفر
     # نفسه فمش لازم نبعته جوه كل task.
-    # ملحوظة: labor/materials/services/tools ممكن تتبعت بنفس الطريقة، لكن
-    # MXAPIJOBPLAN في النسخة دي من ماكسيمو بتعرض بس JOBTASK و JPASSETSPLIN
-    # كـ Source Objects فرعية (اتأكدنا من شاشة Object Structures نفسها) -
-    # يعني بيانات العمالة مش متاحة أصلاً من الـ Object Structure ده، محتاجة
-    # تعديل إداري في ماكسيمو (إضافة JOBLABOR كـ child) لو مطلوبة لاحقًا
+    # العمالة: MXAPIJOBPLAN بيعرض بس JOBTASK و JPASSETSPLINK كـ Source
+    # Objects (شاشة Object Structures)، فالعمالة بتتجاب لوحدها من
+    # JOBPLANLABOR_LOAD وبتتربط بكل خطة قبل التحويل (شوف "attach" في
+    # TYPE_SPECS) - /jobplans/save بيمسح عمالة الخطة القديمة ويحط اللي جاي
+    # معاه في "labor" (أعمدة JPLabor: laborcode, craft, quantity, laborhrs,
+    # laborrate, linecost)
     tasks = []
     for t in (m.get("jobtask") or []):
         t = _strip_spi(t)
@@ -233,6 +239,17 @@ def map_jobplan(m: dict) -> dict:
             "description": t.get("description"),
             "duration": t.get("duration"),
         })
+    labor = [
+        {
+            "laborcode": r.get("laborcode") or None,
+            "craft": r.get("craft") or None,
+            "quantity": r.get("quantity"),
+            "laborhrs": r.get("laborhrs"),
+            "laborrate": r.get("rate"),
+            "linecost": r.get("linecost"),
+        }
+        for r in _child_rows(m.get("_labor") or [], ("joblabor", "joblabors"), ("laborcode", "craft"))
+    ]
     return {
         "jpnum": m.get("jpnum"),
         "description": m.get("description") or m.get("jpnum"),
@@ -240,17 +257,34 @@ def map_jobplan(m: dict) -> dict:
         "org_id": m.get("orgid"),
         "site_id": m.get("siteid"),
         "tasks": tasks,
+        "labor": labor,
     }
 
 
 def map_labor(m: dict) -> dict:
     # personid/craft_code بقوا مبعوتين فعليًا دلوقتي بما إن الأشخاص
     # والحرف بيتنقلوا قبل العمالة في الترتيب - لو الشخص/الحرفة المشار
-    # ليهم لسه مش موجودين لأي سبب، هيفشل السجل ده بس ويظهر في التقرير
+    # ليهم لسه مش موجودين لأي سبب، هيفشل السجل ده بس ويظهر في التقرير.
+    # الحرفة في ماكسيمو مش على جدول LABOR نفسه، في LABORCRAFTRATE (سطر لكل
+    # حرفة، واحد منهم defaultcraft) - بتتجاب لوحدها وتتربط بكل عامل (شوف
+    # "attach" في TYPE_SPECS). /labor/save بيمسح حرف العامل القديمة ويحط
+    # اللي جاي في crafts_list، والحرفة الرئيسية بتروح في craft_code
+    rates = _child_rows(m.get("_crafts") or [], ("laborcraftrate", "laborcraftrates"), ("craft",))
+    crafts_list = [
+        {
+            "craft_code": r.get("craft"),
+            "skill_level": r.get("skilllevel") or None,
+            "standard_rate": r.get("rate") or 0,
+            "is_default": bool(r.get("defaultcraft")),
+        }
+        for r in rates
+    ]
+    main = next((c for c in crafts_list if c["is_default"]), crafts_list[0] if crafts_list else None)
     return {
         "laborcode": m.get("laborcode"),
         "personid": m.get("personid") or None,
-        "craft_code": m.get("craft") or None,
+        "craft_code": m.get("craft") or (main["craft_code"] if main else None),
+        "crafts_list": crafts_list,
         "site_id": m.get("siteid"),
         "org_id": m.get("orgid"),
         "status": m.get("status") or "ACTIVE",
@@ -421,7 +455,11 @@ TYPE_SPECS = {
     "organizations": {"os": None, "count_os": "mxorganization", "ref": "org_id", "map": map_organization, "save": "save_organization"},
     "persons": {"os": "person_load", "ref": "personid", "map": map_person, "save": "save_person"},
     "crafts": {"os": "mxcraft", "ref": "craft", "map": map_craft, "save": "save_craft"},
-    "labor": {"os": "mxapilabor", "ref": "laborcode", "map": map_labor, "save": "save_labor"},
+    # attach: MXAPILABOR مبيرجعش حرف العامل - بتيجي من LABORCRAFTRATE
+    # لوحدها وتتربط بكل عامل بالـ laborcode (العامل في ماكسيمو على مستوى
+    # المنظمة، فغالبًا مفيش siteid في السطور دي)
+    "labor": {"os": "mxapilabor", "ref": "laborcode", "map": map_labor, "save": "save_labor",
+              "attach": {"os": "mxapilaborcraftrate", "key": "laborcode", "as": "_crafts", "label": "Labor Crafts"}},
     "locations": {"os": "mxoperloc", "ref": "location", "map": map_location, "save": "save_location"},
     "assets": {"os": "mxasset", "ref": "assetnum", "map": map_asset, "save": "save_asset"},
     "meters": {"os": "oslcmeter", "ref": "metername", "map": map_meter, "save": "save_meter"},
@@ -447,7 +485,12 @@ TYPE_SPECS = {
                    "select_fallback": "*"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
-    "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan", "inline": False},
+    # attach: العمالة من JOBPLANLABOR_LOAD بـ (jpnum, siteid) - ولو السطور
+    # راجعة بـ pluscrevnum بتتربط بنفس نسخة الخطة بس، عشان عمالة النسخ
+    # القديمة متتكررش على الخطة
+    "jobplans": {"os": "mxapijobplan", "ref": "jpnum", "map": map_jobplan, "save": "save_jobplan", "inline": False,
+                 "attach": {"os": "jobplanlabor_load", "key": "jpnum", "as": "_labor", "label": "Job Plan Labor",
+                            "match_also": ["pluscrevnum"]}},
     # attach: السيكونس بيتجاب من Object Structure منفصل ويتربط بكل PM بـ
     # (pmnum, siteid) قبل الحفظ
     "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm",
@@ -668,19 +711,20 @@ class MigrationRun:
                 })
                 return
 
-        # الربط بـ (key, siteid) لو السجلات الفرعية راجعة بـ siteid، وإلا بـ
-        # key لوحده - لو الـ Object Structure مش بيرجّع siteid، الربط بالزوج
-        # كان هيفشل كله بصمت والقائمة تيجي فاضية (اللي حصل فعليًا)
-        use_site = any(c.get("siteid") for c in children)
+        # الربط بـ (key, siteid, ...) بس للحقول اللي راجعة فعلًا في الطرفين،
+        # وإلا بـ key لوحده - لو الـ Object Structure مش بيرجّع siteid، الربط
+        # بالزوج كان هيفشل كله بصمت والقائمة تيجي فاضية (اللي حصل فعليًا)
+        def present(rows, f):
+            return any(x.get(f) not in (None, "") for x in rows)
+        fields = [key] + [f for f in ["siteid", *attach.get("match_also", [])]
+                          if present(children, f) and present(records, f)]
         groups = {}
         for c in children:
-            gk = (c.get(key), c.get("siteid")) if use_site else c.get(key)
-            groups.setdefault(gk, []).append(c)
+            groups.setdefault(tuple(c.get(f) for f in fields), []).append(c)
 
         matched = 0
         for r in records:
-            gk = (r.get(key), r.get("siteid")) if use_site else r.get(key)
-            r[target] = groups.get(gk, [])
+            r[target] = groups.get(tuple(r.get(f) for f in fields), [])
             matched += bool(r[target])
 
         # مش فشل سجل بعينه، بس لازم يبان في التقرير - قائمة فاضية من غير أي
@@ -695,7 +739,7 @@ class MigrationRun:
             note = None
         if note:
             self.state["types"][type_key]["failures"].append({"ref": "-", "error": note})
-        print(f"[migration] {attach['os']}: {len(children)} children, attached to {matched} of {len(records)} records")
+        print(f"[migration] {attach['os']}: {len(children)} children, attached to {matched} of {len(records)} records by {fields}")
 
     async def _fetch_page_with_retry(self, spec: dict, where: str, key: str, attempts: int = 3,
                                      select: str = None, page_size: int = 500) -> list:
