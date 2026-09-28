@@ -21,6 +21,11 @@ class TeknoraAuthError(Exception):
     pass
 
 
+class BulkUnavailable(Exception):
+    """تكنورا مفيهوش الحفظ الجماعي (نسخة قديمة: 404/405) أو اليوزر مش
+    SUPER_ADMIN (403) - الأداة بترجع للحفظ أمر أمر."""
+
+
 class TeknoraClient:
     def __init__(self, base_url: str, username: str, password: str):
         # base_url المتوقع شامل /api (زي https://app.teknora-eam.com/api)
@@ -95,6 +100,20 @@ class TeknoraClient:
 
     async def save_workorder(self, client: httpx.AsyncClient, wo: dict) -> dict:
         return await self._post(client, "/workorder/save", wo)
+
+    async def save_workorders_bulk(self, client: httpx.AsyncClient, wos: list) -> dict:
+        """صفحة كاملة في طلب واحد - بيرجع {"results": [{"wonum", "error"}]}
+        بنفس ترتيب اللي اتبعت. مهلة طويلة لأن السيرفر بيكتب 500 أمر بفرعياتهم."""
+        url = f"{self.base_url}/migration/workorders/bulk"
+        res = await client.post(url, json={"workorders": wos}, headers=self._headers(), timeout=600.0)
+        if res.status_code == 401:
+            await self.login()
+            res = await client.post(url, json={"workorders": wos}, headers=self._headers(), timeout=600.0)
+        if res.status_code in (403, 404, 405):
+            raise BulkUnavailable(f"HTTP {res.status_code}: {res.text[:200]}")
+        if res.status_code >= 400:
+            raise Exception(f"HTTP {res.status_code}: {res.text[:300]}")
+        return res.json()
 
     async def save_person(self, client: httpx.AsyncClient, person: dict) -> dict:
         return await self._post(client, "/person/save", person)
