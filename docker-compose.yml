@@ -8,6 +8,9 @@ services:
       - "8800:8800"
     environment:
       - MIGRATOR_DATA_DIR=/app/data
+      # كام صفحة أوامر شغل (500 أمر) بتتجاب من ماكسيمو في نفس الوقت - لو
+      # ماكسيمو اتقل أو رجّع أخطاء مهلة قللها، ولو متحملش زودها
+      - MIGRATOR_MAXIMO_PARALLEL=4
     volumes:
       # نقطة استكمال دفعات أوامر الشغل - لازم تعيش بعد أي rebuild للكونتينر،
       # وإلا كل "docker compose up --build" هيرجّع النقل من أول سجل
