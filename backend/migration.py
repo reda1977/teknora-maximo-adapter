@@ -15,6 +15,7 @@ Meters -> Work Orders -> Meter Readings -> Job Plans -> PM
 import asyncio
 import json
 import os
+import re
 import time
 from contextlib import aclosing
 from datetime import datetime, timezone
@@ -34,6 +35,13 @@ DEFAULT_BATCH_SIZE = 100_000
 SAVE_CONCURRENCY = 8
 # سجلات في طلب الحفظ الجماعي الواحد (تكنورا بيقبل لحد 1000)
 BULK_SAVE_SIZE = 500
+# رد الحفظ الجماعي لأمر موجود في تكنورا من نفس الموقع وحالته CLOSE - يعني
+# اتنقل قبل كده (الصفحة اتبعتت تاني بعد ما الكونتينر وقف قبل ما نقطة
+# الاستكمال تتسجل). مش فشل: الأمر موجود كامل ومحدش لمسه
+ALREADY_CLOSED = "Cannot edit a CLOSED Work Order."
+# ردود تكنورا على سجل بعينه (بيانات السجل نفسه) - غير كده (5xx، مهلة،
+# اتصال، صلاحيات) يبقى الطلب نفسه فشل
+_RECORD_LEVEL_HTTP = re.compile(r"^HTTP (400|404|409|422)\b")
 # صفحات الدفعات: كام سجل في الصفحة، وكام صفحة بتتجاب من ماكسيمو في نفس الوقت.
 # صفحة أوامر الشغل الواحدة (بالتاسكات والعمالة المتداخلة) بتاخد حوالي نص
 # دقيقة من ماكسيمو، فصفحة ورا صفحة كان ماكسيمو هو اللي محدد السرعة كلها
@@ -526,6 +534,8 @@ class MigrationRun:
         self._select_override = {}  # os -> select بديل لو ماكسيمو رفض الـ select الأصلي
         self._in_unsupported = False  # ماكسيمو رفض "in [..]" (BMXAA8744E) -> قيمة قيمة
         self._bulk_unavailable = None  # سبب إن الحفظ الجماعي مش متاح في تكنورا -> أمر أمر
+        # عدد الفشل في آخر _save_many اللي سببه الطلب نفسه (مش رد تكنورا على السجل)
+        self._last_request_failures = 0
         self.state = {
             "status": "idle",  # idle | running | done
             "current_type": None,
@@ -603,10 +613,14 @@ class MigrationRun:
             async with sem:
                 return await self._save_record(type_key, spec, save_fn, client, r)
 
-        return await asyncio.gather(*[save_limited(r) for r in records])
+        errs = await asyncio.gather(*[save_limited(r) for r in records])
+        self._last_request_failures = sum(1 for e in errs if e and not _RECORD_LEVEL_HTTP.match(e))
+        return errs
 
     async def _save_bulk(self, type_key: str, spec: dict, client: httpx.AsyncClient, records: list) -> list:
         errs = [None] * len(records)
+        already = set()
+        self._last_request_failures = 0
         payloads, idx = [], []
         for n, r in enumerate(records):
             await self._resolve_refs(r)
@@ -623,18 +637,26 @@ class MigrationRun:
                 if len(results) != len(chunk):
                     raise Exception(f"تكنورا رجّع {len(results)} نتيجة لـ {len(chunk)} سجل")
                 for j, out in enumerate(results):
-                    errs[idx[k + j]] = out.get("error")
+                    if out.get("error") == ALREADY_CLOSED:
+                        already.add(idx[k + j])
+                    else:
+                        errs[idx[k + j]] = out.get("error")
             except BulkUnavailable:
                 if k == 0:
                     raise  # لسه مفيش حاجة اتسجلت - نرجع لأمر أمر من الأول
                 for j in range(len(chunk)):
                     errs[idx[k + j]] = "الحفظ الجماعي بقى مش متاح في نص الصفحة"
+                self._last_request_failures += len(chunk)
             except Exception as e:
                 # الطلب كله فشل (تكنورا واقع، مهلة...) - كل سجلات الجزء ده فاشلة
                 for j in range(len(chunk)):
                     errs[idx[k + j]] = _describe_exc(e)
+                self._last_request_failures += len(chunk)
         for r, err in zip(records, errs):
             self._record_result(type_key, r.get(spec["ref"]), err)
+        if already:
+            st = self.state["types"][type_key]
+            st["already_closed"] = st.get("already_closed", 0) + len(already)
         return errs
 
     async def _save_record(self, type_key: str, spec: dict, save_fn, client: httpx.AsyncClient, r: dict):
@@ -960,9 +982,11 @@ class MigrationRun:
                             failed_items.pop(rid, None)
                         else:
                             failed_items[rid] = {"ref": r.get(spec["ref"]), "error": err[:300]}
-                    if to_save and not any(ok):
-                        # صفحة كاملة فشلت = غالبًا مشكلة عامة (تكنورا واقع، توكن...)
-                        # مش مشكلة بيانات - منحركش نقطة الاستكمال عشان منعدّيش
+                    if to_save and not any(ok) and self._last_request_failures == len(to_save):
+                        # الطلبات نفسها فشلت لكل سجلات الصفحة (تكنورا واقع، مهلة،
+                        # صلاحيات) - مش رد تكنورا على كل سجل بسببه. كان الشرط "كلها
+                        # فشلت" بس، فصفحة كلها أوامر CLOSE اتبعتت تاني كانت بتوقف
+                        # الدفعة عندها للأبد. منحركش نقطة الاستكمال عشان منعدّيش
                         # 500 سجل من غير ما يتنقلوا. ومنسجلهمش فاشلين كمان: هيتعادوا
                         # لوحدهم من نقطة الاستكمال في التشغيلة الجاية. الصفحة اللي
                         # كانت بتتجاب في الخلفية بتتلغي في finally
