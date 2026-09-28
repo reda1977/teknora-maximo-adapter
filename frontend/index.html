@@ -403,6 +403,7 @@ const I18N = {
     timing_line: (mx, ch, tk, perMin) => `الوقت: صفحات ماكسيمو ${mx} د · التاسكات والعمالة ${ch} د · الحفظ في تكنورا ${tk} د · السرعة ${perMin} صف/دقيقة`,
     in_fallback_note: '(ماكسيمو مش بيقبل البحث بقايمة "in" - بنسأل عن كل أمر لوحده، وده أبطأ)',
     bulk_note: '(حفظ جماعي: صفحة كاملة في طلب واحد)',
+    already_closed: (n) => `(${n} أمر كانوا متنقلين قبل كده ومقفولين CLOSE - اتسابوا زي ما هم واتحسبوا ناجحين)`,
     retry_btn: 'إعادة الفاشل',
     retry_pending: (n, legacy) => legacy
       ? `${n} سجل فاشل مستني إعادة، وكمان أوامر COMP من الدفعات اللي قبل تسجيل الفشل (هيتدوّر عليهم أول مرة)`
@@ -448,6 +449,7 @@ const I18N = {
     timing_line: (mx, ch, tk, perMin) => `Time: Maximo pages ${mx} min · tasks & labor ${ch} min · Teknora saves ${tk} min · speed ${perMin} rows/min`,
     in_fallback_note: '(Maximo rejects "in" list queries - looking up each work order separately, which is slower)',
     bulk_note: '(bulk save: one request per page)',
+    already_closed: (n) => `(${n} work orders were already migrated and CLOSED - left as they are and counted as ok)`,
     retry_btn: 'Retry failed',
     retry_pending: (n, legacy) => legacy
       ? `${n} failed records waiting to be retried, plus COMP work orders from batches before failures were tracked (looked up on the first retry)`
@@ -687,6 +689,7 @@ function timingText(tp) {
   let txt = t('timing_line')(mins(tm.maximo), mins(tm.children), mins(tm.teknora), fmt(perMin));
   if (tp.batch.in_fallback) txt += ' ' + t('in_fallback_note');
   if (tp.batch.bulk) txt += ' ' + t('bulk_note');
+  if (tp.already_closed) txt += ' ' + t('already_closed')(fmt(tp.already_closed));
   return txt;
 }
 
