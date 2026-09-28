@@ -878,8 +878,11 @@ class MigrationRun:
         st = self.state["types"][type_key]
         st["batch"] = {"size": self.batch_size, "start_after": start_after, "last_id": start_after,
                        "migrated_before": cp.get("migrated", 0), "finished_all": False, "skipped": 0,
-                       # ثواني في كل مرحلة - عشان لما النقل يبطأ نعرف السبب بالرقم
-                       "timing": {"maximo": 0.0, "children": 0.0, "teknora": 0.0}, "in_fallback": False}
+                       # ثواني في كل مرحلة - عشان لما النقل يبطأ نعرف السبب بالرقم.
+                       # wait: الحفظ واقف مستني ماكسيمو (البفر فاضي). maximo/children:
+                       # مجموع وقت الصفحات اللي بتتجاب مع بعض (أكبر من الوقت الفعلي)
+                       "timing": {"maximo": 0.0, "children": 0.0, "teknora": 0.0, "wait": 0.0},
+                       "buffer": 0, "in_fallback": False}
         timing = st["batch"]["timing"]
 
         async def fetch_range(ids: list) -> tuple:
@@ -899,129 +902,162 @@ class MigrationRun:
             except Exception:
                 return await self._fetch_ids_bisect(spec, key, ids)
 
-        async def prepare(after_id, want: int) -> list:
-            """الصفحات الجاية بفرعياتها (تاسكات وعمالة)، جاهزة للحفظ. استعلام
-            خفيف الأول بالـ IDs بس (حقل واحد) للـ want سجل الجايين، وبعدين
-            الـ IDs بتتقسم صفحات وكل الصفحات بتتجاب من ماكسيمو في نفس الوقت.
-            بيشتغل للمجموعة الجاية وإحنا بنحفظ الحالية في تكنورا."""
-            t0 = time.monotonic()
-            # keyset "أول N بعد آخر ID" - مفيش صفحات بعيدة، فالطلب رقم 400 بنفس سرعة الأول
-            where = f"spi:{key}>{after_id}" if after_id is not None else None
-            id_recs = await self._fetch_page_with_retry(spec, where, key, select=f"spi:{key}", page_size=want)
-            ids = [r.get(key) for r in id_recs]
-            if any(not isinstance(i, (int, float)) for i in ids):
-                raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
-            ids = sorted(int(i) for i in ids)
-            if not ids:
-                timing["maximo"] += time.monotonic() - t0
-                return []
-            chunks = [ids[i:i + BATCH_PAGE_SIZE] for i in range(0, len(ids), BATCH_PAGE_SIZE)]
-            fetched_pages = await asyncio.gather(*[fetch_range(c) for c in chunks])
-            timing["maximo"] += time.monotonic() - t0
+        # بفر زي الاستريمنج: قارئ بيجيب أرقام الأوامر قدام ويقسمها صفحات بالترتيب،
+        # وكل صفحة بتبدأ تتجاب فورًا (لحد MAXIMO_PARALLEL_PAGES صفحة شغالين مع
+        # بعض، وكل واحدة أول ما تخلص اللي بعدها تاخد مكانها - مفيش استنى أبطأ
+        # صفحة في مجموعة). الصفحات الجاهزة بتستنى في الطابور، والحفظ بياخد منه
+        # بالترتيب. الطابور محدود عشان الذاكرة: لو اتملى القارئ بيستنى
+        queue = asyncio.Queue(maxsize=max(2, 2 * MAXIMO_PARALLEL_PAGES))
+        mx_sem = asyncio.Semaphore(MAXIMO_PARALLEL_PAGES)
+        buf = {"ready": 0}
 
-            pages = []
-            for chunk, (page, bad) in zip(chunks, fetched_pages):
+        async def fetch_page(ids: list) -> tuple:
+            """صفحة واحدة كاملة بتاسكاتها وعمالتها، جاهزة للحفظ."""
+            async with mx_sem:
+                t0 = time.monotonic()
+                page, bad = await fetch_range(ids)
+                timing["maximo"] += time.monotonic() - t0
                 got = [r.get(key) for r in page]
                 if any(not isinstance(i, (int, float)) for i in got):
                     raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
                 if got != sorted(got):
                     # لو ماكسيمو تجاهل الترتيب نوقف بوضوح أحسن من فقد بيانات
                     raise Exception(f"ماكسيمو رجّع السجلات مش مترتبة بالـ {key} - وقفنا عشان منعدّيش سجلات")
-                pages.append((page, bad, self._without_skipped(spec, page), chunk[-1]))
-            if spec.get("enrich"):
-                # لو جلب الفرعيات فشل بيرمي ويوقف الدفعة من غير ما نقطة
-                # الاستكمال تتحرك - أحسن من إن الأوامر تتحفظ ناقصة بصمت
-                t0 = time.monotonic()
-                await asyncio.gather(*[getattr(self, spec["enrich"])(spec, to_save)
-                                       for _, _, to_save, _ in pages if to_save])
-                timing["children"] += time.monotonic() - t0
-                st["batch"]["in_fallback"] = self._in_unsupported
-            return pages
+                to_save = self._without_skipped(spec, page)
+                if spec.get("enrich") and to_save:
+                    # لو جلب الفرعيات فشل بيرمي ويوقف الدفعة (لما الحفظ يوصل
+                    # للصفحة دي) من غير ما نقطة الاستكمال تعدّيها - أحسن من إن
+                    # الأوامر تتحفظ ناقصة بصمت
+                    t0 = time.monotonic()
+                    await getattr(self, spec["enrich"])(spec, to_save)
+                    timing["children"] += time.monotonic() - t0
+                    st["batch"]["in_fallback"] = self._in_unsupported
+            buf["ready"] += 1
+            return page, bad, to_save, ids[-1]
 
-        group_size = BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES
+        async def scan_ids():
+            """الأرقام الجاية بالترتيب (استعلام خفيف: حقل واحد، keyset "بعد آخر
+            ID" - مفيش صفحات بعيدة)، وصفحة لكل BATCH_PAGE_SIZE رقم في الطابور."""
+            cursor, remaining = start_after, self.batch_size
+            try:
+                while remaining > 0:
+                    where = f"spi:{key}>{cursor}" if cursor is not None else None
+                    id_recs = await self._fetch_page_with_retry(
+                        spec, where, key, select=f"spi:{key}",
+                        page_size=min(BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES, remaining))
+                    ids = [r.get(key) for r in id_recs]
+                    if any(not isinstance(i, (int, float)) for i in ids):
+                        raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
+                    ids = sorted(int(i) for i in ids)
+                    if not ids:
+                        await queue.put(("end_all", None))
+                        return
+                    for n in range(0, len(ids), BATCH_PAGE_SIZE):
+                        task = asyncio.create_task(fetch_page(ids[n:n + BATCH_PAGE_SIZE]))
+                        try:
+                            await queue.put(("page", task))
+                        except asyncio.CancelledError:
+                            task.cancel()
+                            raise
+                    cursor, remaining = ids[-1], remaining - len(ids)
+                await queue.put(("end_batch", None))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # الخطأ بيوصل للحفظ بالترتيب، بعد الصفحات اللي قبله
+                await queue.put(("error", e))
+
         fetched = 0
         last_id = start_after
         started = time.monotonic()
-        next_task = None
+        scanner = None
         try:
             await self._probe_select(spec, type_key)
-            next_task = asyncio.create_task(prepare(last_id, min(group_size, self.batch_size)))
+            scanner = asyncio.create_task(scan_ids())
             while True:
-                # نتيجة المجموعة دي (أو خطأها) بتتاخد هنا، بعد ما اللي قبلها
-                # اتحفظت ونقطتها اتسجلت - فأي فشل في الجلب مبيأثرش على اللي قبله
-                group = await next_task
-                next_task = None
-                if not group:
+                # الصفحة الجاية بالترتيب (أو خطأها) - أي فشل في الجلب بيوصل هنا
+                # بعد ما كل اللي قبله اتحفظ ونقطته اتسجلت
+                t0 = time.monotonic()
+                kind, item = await queue.get()
+                if kind == "page":
+                    page, bad, to_save, page_last = await item
+                    buf["ready"] -= 1
+                timing["wait"] += time.monotonic() - t0
+                st["batch"]["buffer"] = buf["ready"]
+                if kind == "end_all":
                     st["batch"]["finished_all"] = True
                     break
-
-                group_ids = sum(len(p) + len(b) for p, b, _, _ in group)
-                fetched += group_ids
-                if fetched < self.batch_size:
-                    # المجموعة الجاية بتتجاب من ماكسيمو وإحنا بنحفظ دي في تكنورا
-                    next_task = asyncio.create_task(
-                        prepare(group[-1][3], min(group_size, self.batch_size - fetched)))
+                if kind == "end_batch":
+                    break
+                if kind == "error":
+                    raise item
+                fetched += len(page) + len(bad)
 
                 # الحفظ ونقطة الاستكمال صفحة صفحة وبالترتيب - نقطة الاستكمال
-                # بتتحرك لآخر ID في الصفحة بعد ما تتحفظ بس، زي الأول بالظبط
-                for page, bad, to_save, page_last in group:
-                    for bad_id, reason in bad:
-                        err = f"ماكسيمو مش قادر يرجّع السجل ده (اتعزل واتعدّى): {reason}"
-                        self._record_result(type_key, f"{key}={int(bad_id)}", err)
-                        failed_items[str(int(bad_id))] = {"ref": None, "error": err[:300]}
-                    st["batch"]["skipped"] += len(page) - len(to_save)
+                # بتتحرك لآخر ID في الصفحة بعد ما تتحفظ بس
+                for bad_id, reason in bad:
+                    err = f"ماكسيمو مش قادر يرجّع السجل ده (اتعزل واتعدّى): {reason}"
+                    self._record_result(type_key, f"{key}={int(bad_id)}", err)
+                    failed_items[str(int(bad_id))] = {"ref": None, "error": err[:300]}
+                st["batch"]["skipped"] += len(page) - len(to_save)
 
-                    t0 = time.monotonic()
-                    errs = await self._save_many(type_key, spec, client, to_save)
-                    timing["teknora"] += time.monotonic() - t0
-                    st["batch"]["bulk"] = bool(spec.get("bulk_save")) and self._bulk_unavailable is None
-                    ok = [e is None for e in errs]
-                    for r, err in zip(to_save, errs):
-                        rid = str(int(r[key]))
-                        if err is None:
-                            failed_items.pop(rid, None)
-                        else:
-                            failed_items[rid] = {"ref": r.get(spec["ref"]), "error": err[:300]}
-                    if to_save and not any(ok) and self._last_request_failures == len(to_save):
-                        # الطلبات نفسها فشلت لكل سجلات الصفحة (تكنورا واقع، مهلة،
-                        # صلاحيات) - مش رد تكنورا على كل سجل بسببه. كان الشرط "كلها
-                        # فشلت" بس، فصفحة كلها أوامر CLOSE اتبعتت تاني كانت بتوقف
-                        # الدفعة عندها للأبد. منحركش نقطة الاستكمال عشان منعدّيش
-                        # 500 سجل من غير ما يتنقلوا. ومنسجلهمش فاشلين كمان: هيتعادوا
-                        # لوحدهم من نقطة الاستكمال في التشغيلة الجاية. الصفحة اللي
-                        # كانت بتتجاب في الخلفية بتتلغي في finally
-                        for r in to_save:
-                            failed_items.pop(str(int(r[key])), None)
-                        st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
-                        return
+                t0 = time.monotonic()
+                errs = await self._save_many(type_key, spec, client, to_save)
+                timing["teknora"] += time.monotonic() - t0
+                st["batch"]["bulk"] = bool(spec.get("bulk_save")) and self._bulk_unavailable is None
+                ok = [e is None for e in errs]
+                for r, err in zip(to_save, errs):
+                    rid = str(int(r[key]))
+                    if err is None:
+                        failed_items.pop(rid, None)
+                    else:
+                        failed_items[rid] = {"ref": r.get(spec["ref"]), "error": err[:300]}
+                if to_save and not any(ok) and self._last_request_failures == len(to_save):
+                    # الطلبات نفسها فشلت لكل سجلات الصفحة (تكنورا واقع، مهلة،
+                    # صلاحيات) - مش رد تكنورا على كل سجل بسببه. كان الشرط "كلها
+                    # فشلت" بس، فصفحة كلها أوامر CLOSE اتبعتت تاني كانت بتوقف
+                    # الدفعة عندها للأبد. منحركش نقطة الاستكمال عشان منعدّيش
+                    # 500 سجل من غير ما يتنقلوا. ومنسجلهمش فاشلين كمان: هيتعادوا
+                    # لوحدهم من نقطة الاستكمال في التشغيلة الجاية. الصفحة اللي
+                    # كانت بتتجاب في الخلفية بتتلغي في finally
+                    for r in to_save:
+                        failed_items.pop(str(int(r[key])), None)
+                    st["failures"].append({"ref": "-", "error": "كل سجلات صفحة كاملة فشلت، فوقفنا الدفعة من غير ما نحرّك نقطة الاستكمال - شوف أسباب الفشل اللي فوق"})
+                    return
 
-                    last_id = page_last
-                    cp = {
-                        "last_id": last_id,
-                        "migrated": cp.get("migrated", 0) + sum(ok),
-                        "failed": cp.get("failed", 0) + (len(ok) - sum(ok)) + len(bad),
-                        "batches": cp.get("batches", 0),
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    # الفاشل بيتحفظ قبل نقطة الاستكمال: لو الكونتينر وقع بينهم،
-                    # أسوأ حاجة إن الصفحة تتعاد، مش إن سجلات فاشلة تضيع
-                    save_failed(cp_key, fail_entry)
-                    save_checkpoint(cp_key, cp)
-                    st["batch"]["last_id"] = last_id
-                    timing["elapsed"] = time.monotonic() - started
-                if next_task is None:
-                    break
+                last_id = page_last
+                cp = {
+                    "last_id": last_id,
+                    "migrated": cp.get("migrated", 0) + sum(ok),
+                    "failed": cp.get("failed", 0) + (len(ok) - sum(ok)) + len(bad),
+                    "batches": cp.get("batches", 0),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                # الفاشل بيتحفظ قبل نقطة الاستكمال: لو الكونتينر وقع بينهم،
+                # أسوأ حاجة إن الصفحة تتعاد، مش إن سجلات فاشلة تضيع
+                save_failed(cp_key, fail_entry)
+                save_checkpoint(cp_key, cp)
+                st["batch"]["last_id"] = last_id
+                timing["elapsed"] = time.monotonic() - started
             cp["batches"] = cp.get("batches", 0) + 1
             if fetched:
                 save_checkpoint(cp_key, cp)
         except Exception as e:
             st["failures"].append({"ref": "-", "error": f"تعذر جلب البيانات من Maximo: {_describe_exc(e)}"})
         finally:
-            if next_task is not None and not next_task.done():
-                next_task.cancel()
-            if next_task is not None:
+            # وقفنا (خلصت الدفعة، أو فشل، أو صفحة كاملة فشلت): القارئ والصفحات
+            # اللي لسه بتتجاب بتتلغي - محدش هيحفظها، وهتتجاب تاني من نقطة الاستكمال
+            pending = [scanner] if scanner is not None else []
+            while not queue.empty():
+                kind, item = queue.get_nowait()
+                if kind == "page":
+                    pending.append(item)
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            for task in pending:
                 try:
-                    await next_task
+                    await task
                 except BaseException:
                     pass
             timing["elapsed"] = time.monotonic() - started
