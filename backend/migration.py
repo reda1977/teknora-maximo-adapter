@@ -245,8 +245,11 @@ def map_jobplan(m: dict) -> dict:
             "craft": r.get("craft") or None,
             "quantity": r.get("quantity"),
             "laborhrs": r.get("laborhrs"),
-            "laborrate": r.get("rate"),
-            "linecost": r.get("linecost"),
+            # ماكسيمو بيشيل الحقل من الرد لو قيمته فاضية (العينة الفعلية من
+            # JOBPLANLABOR_LOAD مفيهاش rate ولا linecost خالص) - None كان
+            # هيتخزن NULL بدل الـ default صفر بتاع العمود
+            "laborrate": r.get("rate") or 0.0,
+            "linecost": r.get("linecost") or 0.0,
         }
         for r in _child_rows(m.get("_labor") or [], ("joblabor", "joblabors"), ("laborcode", "craft"))
     ]
@@ -456,10 +459,11 @@ TYPE_SPECS = {
     "persons": {"os": "person_load", "ref": "personid", "map": map_person, "save": "save_person"},
     "crafts": {"os": "mxcraft", "ref": "craft", "map": map_craft, "save": "save_craft"},
     # attach: MXAPILABOR مبيرجعش حرف العامل - بتيجي من LABORCRAFTRATE
-    # لوحدها وتتربط بكل عامل بالـ laborcode (العامل في ماكسيمو على مستوى
-    # المنظمة، فغالبًا مفيش siteid في السطور دي)
+    # لوحدها وتتربط بكل عامل بـ (laborcode, orgid) - العامل في ماكسيمو على
+    # مستوى المنظمة، والسطور فعلًا راجعة بـ orgid ومن غير siteid
     "labor": {"os": "mxapilabor", "ref": "laborcode", "map": map_labor, "save": "save_labor",
-              "attach": {"os": "mxapilaborcraftrate", "key": "laborcode", "as": "_crafts", "label": "Labor Crafts"}},
+              "attach": {"os": "mxapilaborcraftrate", "key": "laborcode", "as": "_crafts", "label": "Labor Crafts",
+                         "match_also": ["orgid"]}},
     "locations": {"os": "mxoperloc", "ref": "location", "map": map_location, "save": "save_location"},
     "assets": {"os": "mxasset", "ref": "assetnum", "map": map_asset, "save": "save_asset"},
     "meters": {"os": "oslcmeter", "ref": "metername", "map": map_meter, "save": "save_meter"},
