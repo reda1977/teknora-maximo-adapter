@@ -935,23 +935,42 @@ class MigrationRun:
             buf["ready"] += 1
             return page, bad, to_save, ids[-1]
 
+        skip = spec.get("skip_if")
+
         async def scan_ids():
-            """الأرقام الجاية بالترتيب (استعلام خفيف: حقل واحد، keyset "بعد آخر
-            ID" - مفيش صفحات بعيدة)، وصفحة لكل BATCH_PAGE_SIZE رقم في الطابور."""
+            """الأرقام الجاية بالترتيب (استعلام خفيف: حقل أو اتنين، keyset "بعد
+            آخر ID" - مفيش صفحات بعيدة)، وصفحة لكل BATCH_PAGE_SIZE رقم في الطابور.
+            حجم الدفعة بيتعد بالسجلات اللي بتتحفظ فعلًا: صفوف التاسكات (skip_if)
+            بتيجي في نفس الترقيم بس مبتتحسبش - كانت بتتحسب، فدفعة "100 ألف" في
+            أوامر PM كلها تاسكات كانت بتخلص عند حوالي 33 ألف أمر شغل"""
             cursor, remaining = start_after, self.batch_size
             try:
                 while remaining > 0:
                     where = f"spi:{key}>{cursor}" if cursor is not None else None
-                    id_recs = await self._fetch_page_with_retry(
-                        spec, where, key, select=f"spi:{key}",
-                        page_size=min(BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES, remaining))
-                    ids = [r.get(key) for r in id_recs]
-                    if any(not isinstance(i, (int, float)) for i in ids):
+                    try:
+                        id_recs = await self._fetch_page_with_retry(
+                            spec, where, key, select=f"spi:{key}" + (f",spi:{skip}" if skip else ""),
+                            page_size=BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES)
+                    except Exception:
+                        if not skip:
+                            raise
+                        # سجل مكسور في المدى ده رفض حتى الحقل التاني - بالـ ID بس
+                        # (من غير skip_if كل صف بيتحسب، زي الأول، للخطوة دي بس)
+                        id_recs = await self._fetch_page_with_retry(
+                            spec, where, key, select=f"spi:{key}", page_size=BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES)
+                    if any(not isinstance(r.get(key), (int, float)) for r in id_recs):
                         raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
-                    ids = sorted(int(i) for i in ids)
-                    if not ids:
+                    if not id_recs:
                         await queue.put(("end_all", None))
                         return
+                    # لحد آخر سجل محسوب في الدفعة (+ التاسكات اللي بعده في نفس الاستعلام)
+                    ids, counted = [], 0
+                    for i, skipped in sorted((int(r[key]), bool(skip and r.get(skip))) for r in id_recs):
+                        if not skipped:
+                            if counted == remaining:
+                                break
+                            counted += 1
+                        ids.append(i)
                     for n in range(0, len(ids), BATCH_PAGE_SIZE):
                         task = asyncio.create_task(fetch_page(ids[n:n + BATCH_PAGE_SIZE]))
                         try:
@@ -959,7 +978,7 @@ class MigrationRun:
                         except asyncio.CancelledError:
                             task.cancel()
                             raise
-                    cursor, remaining = ids[-1], remaining - len(ids)
+                    cursor, remaining = ids[-1], remaining - counted
                 await queue.put(("end_batch", None))
             except asyncio.CancelledError:
                 raise
