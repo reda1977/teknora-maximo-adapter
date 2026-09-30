@@ -936,6 +936,7 @@ class MigrationRun:
             return page, bad, to_save, ids[-1]
 
         skip = spec.get("skip_if")
+        scan = {"with_skip": bool(skip)}
 
         async def scan_ids():
             """الأرقام الجاية بالترتيب (استعلام خفيف: حقل أو اتنين، keyset "بعد
@@ -947,17 +948,32 @@ class MigrationRun:
             try:
                 while remaining > 0:
                     where = f"spi:{key}>{cursor}" if cursor is not None else None
-                    try:
-                        id_recs = await self._fetch_page_with_retry(
-                            spec, where, key, select=f"spi:{key}" + (f",spi:{skip}" if skip else ""),
-                            page_size=BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES)
-                    except Exception:
-                        if not skip:
-                            raise
-                        # سجل مكسور في المدى ده رفض حتى الحقل التاني - بالـ ID بس
-                        # (من غير skip_if كل صف بيتحسب، زي الأول، للخطوة دي بس)
-                        id_recs = await self._fetch_page_with_retry(
+                    async def ids_only():
+                        return await self._fetch_page_with_retry(
                             spec, where, key, select=f"spi:{key}", page_size=BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES)
+
+                    if scan["with_skip"]:
+                        try:
+                            id_recs = await self._fetch_page_with_retry(
+                                spec, where, key, select=f"spi:{key},spi:{skip}",
+                                page_size=BATCH_PAGE_SIZE * MAXIMO_PARALLEL_PAGES)
+                        except Exception:
+                            # سجل مكسور في المدى ده رفض حتى الحقل التاني - بالـ ID بس
+                            # (من غير skip_if كل صف بيتحسب، زي الأول، للخطوة دي بس)
+                            id_recs = await ids_only()
+                        if not id_recs:
+                            # قبل ما نقول "خلصنا كله": نتأكد بالـ ID لوحده. لو رجع سجلات
+                            # يبقى ماكسيمو مش بيرجّع حاجة لما الحقل التاني يتطلب معاه -
+                            # نكمل بالـ ID بس للدفعة كلها ونقول ده في التقرير
+                            id_recs = await ids_only()
+                            if id_recs:
+                                scan["with_skip"] = False
+                                st["failures"].append({"ref": "-", "error": (
+                                    f"ماكسيمو رجّع 0 سجل لما طلبنا spi:{key},spi:{skip} مع إن فيه سجلات بالـ ID لوحده "
+                                    f"(أول ID: {id_recs[0].get(key)}) - كمّلنا بالـ ID بس، فحجم الدفعة بيتعد بالصفوف "
+                                    f"(صفوف التاسكات بتتحسب) زي الأول")})
+                    else:
+                        id_recs = await ids_only()
                     if any(not isinstance(r.get(key), (int, float)) for r in id_recs):
                         raise Exception(f"الحقل '{key}' مش راجع في بيانات ماكسيمو - مينفعش نقسم على دفعات من غيره")
                     if not id_recs:
