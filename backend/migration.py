@@ -979,9 +979,17 @@ class MigrationRun:
                     if not id_recs:
                         await queue.put(("end_all", None))
                         return
+                    returned = [int(r[key]) for r in id_recs]
+                    if returned != sorted(returned):
+                        # الاستعلام طالب ترتيب بالـ ID، والخطوة الجاية بتبدأ "بعد آخر
+                        # ID" - لو ماكسيمو رجّعهم مش مترتبين، يبقى مش ضامنين إنهم أول
+                        # N بعد نقطة الاستكمال، وأي ID بينهم مرجعش كان هيتعدّى بصمت.
+                        # (كنا بنرتبهم إحنا، وده كان هيخبي المشكلة دي بالظبط)
+                        raise Exception(f"ماكسيمو رجّع أرقام {key} مش مترتبة في استعلام الأرقام - "
+                                        f"وقفنا عشان منعدّيش أوامر (أول أرقام: {returned[:5]})")
                     # لحد آخر سجل محسوب في الدفعة (+ التاسكات اللي بعده في نفس الاستعلام)
                     ids, counted = [], 0
-                    for i, skipped in sorted((int(r[key]), bool(skip and r.get(skip))) for r in id_recs):
+                    for i, skipped in ((int(r[key]), bool(skip and r.get(skip))) for r in id_recs):
                         if not skipped:
                             if counted == remaining:
                                 break
