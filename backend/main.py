@@ -51,6 +51,8 @@ class TeknoraConnectRequest(BaseModel):
 class StartMigrationRequest(BaseModel):
     types: list[str]
     batch_size: int = DEFAULT_BATCH_SIZE
+    # حجم دفعة لكل نوع مقسّم (أوامر الشغل، الحقول الإضافية) - لو مش موجود بياخد batch_size
+    batch_sizes: dict[str, int] = {}
 
 
 def _describe_exc(e: Exception) -> str:
@@ -174,9 +176,9 @@ async def start_migration(req: StartMigrationRequest):
     if existing_run and existing_run.state["status"] == "running":
         raise HTTPException(status_code=409, detail="فيه عملية نقل شغالة بالفعل")
 
-    if req.batch_size < 1:
+    if req.batch_size < 1 or any(v < 1 for v in req.batch_sizes.values()):
         raise HTTPException(status_code=400, detail="حجم الدفعة لازم يكون أكبر من صفر")
-    run = MigrationRun(maximo, teknora, req.types, batch_size=req.batch_size)
+    run = MigrationRun(maximo, teknora, req.types, batch_size=req.batch_size, batch_sizes=req.batch_sizes)
     STATE["run"] = run
     asyncio.create_task(run.run())
     return {"message": "بدأت عملية النقل"}

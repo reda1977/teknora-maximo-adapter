@@ -598,11 +598,12 @@ TYPE_SPECS = {
 
 class MigrationRun:
     def __init__(self, maximo: MaximoClient, teknora: TeknoraClient, selected_types: list,
-                 batch_size: int = DEFAULT_BATCH_SIZE, mode: str = "migrate"):
+                 batch_size: int = DEFAULT_BATCH_SIZE, mode: str = "migrate", batch_sizes: dict = None):
         self.maximo = maximo
         self.teknora = teknora
         self.selected_types = set(selected_types)
         self.batch_size = batch_size
+        self.batch_sizes = dict(batch_sizes or {})  # نوع -> حجم دفعته (من خانة النوع في الواجهة)
         self.mode = mode  # migrate | retry
         self._select_override = {}  # os -> select بديل لو ماكسيمو رفض الـ select الأصلي
         self._in_unsupported = False  # ماكسيمو رفض "in [..]" (BMXAA8744E) -> قيمة قيمة
@@ -968,9 +969,10 @@ class MigrationRun:
         save_failed(cp_key, fail_entry)
         failed_items = fail_entry["items"]
 
-        self._init_type(type_key, self.batch_size)
+        batch_size = self.batch_sizes.get(type_key) or self.batch_size
+        self._init_type(type_key, batch_size)
         st = self.state["types"][type_key]
-        st["batch"] = {"size": self.batch_size, "start_after": start_after, "last_id": start_after,
+        st["batch"] = {"size": batch_size, "start_after": start_after, "last_id": start_after,
                        "migrated_before": cp.get("migrated", 0), "finished_all": False, "skipped": 0,
                        # ثواني في كل مرحلة - عشان لما النقل يبطأ نعرف السبب بالرقم.
                        # wait: الحفظ واقف مستني ماكسيمو (البفر فاضي). maximo/children:
@@ -1038,7 +1040,7 @@ class MigrationRun:
             حجم الدفعة بيتعد بالسجلات اللي بتتحفظ فعلًا: صفوف التاسكات (skip_if)
             بتيجي في نفس الترقيم بس مبتتحسبش - كانت بتتحسب، فدفعة "100 ألف" في
             أوامر PM كلها تاسكات كانت بتخلص عند حوالي 33 ألف أمر شغل"""
-            cursor, remaining = start_after, self.batch_size
+            cursor, remaining = start_after, batch_size
             try:
                 while remaining > 0:
                     where = f"spi:{key}>{cursor}" if cursor is not None else None
