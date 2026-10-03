@@ -320,6 +320,16 @@ def map_pm(m: dict) -> dict:
     frequency = None
     if m.get("frequency") is not None or m.get("frequnit"):
         frequency = {"frequency": m.get("frequency"), "frequnit": m.get("frequnit")}
+        # ميعاد التنفيذ الجاي زي ماكسيمو بالظبط. من غيره pm_frequency.nextdate
+        # كان بيتحفظ فاضي، ومحرك التوقعات في تكنورا بيبدأ العد من لحظة
+        # التوليد - فكل الخطط الأسبوعية طلعت على يوم غير يوم ماكسيمو (ماكسيمو
+        # الأحد وتكنورا الخميس). extdate (التاريخ الممدّد) في ماكسيمو بيغلب
+        # nextdate للأمر الجاي، واسمه في تكنورا exdate. بنبعت بس اللي راجع
+        # فعلًا: مفتاح بقيمة None كان هيكتب NULL مكان الـ default بتاع العمود
+        for teknora_key, maximo_key in (("nextdate", "nextdate"), ("exdate", "extdate"),
+                                        ("usetargetdate", "usetargetdate")):
+            if m.get(maximo_key) not in (None, ""):
+                frequency[teknora_key] = m.get(maximo_key)
     # تابة السيكونس: /pm/save بيقبل "sequences" وبيطابقها على أعمدة
     # PMSequence (jpnum, interval). MXAPIPM مبيرجعش PMSEQUENCE خالص، فبتتجاب
     # لوحدها من PMSEQUENCE_LOAD وبتتربط بكل PM قبل التحويل (شوف "attach" في
@@ -514,7 +524,10 @@ TYPE_SPECS = {
     # attach: السيكونس بيتجاب من Object Structure منفصل ويتربط بكل PM بـ
     # (pmnum, siteid) قبل الحفظ
     "pm": {"os": "mxapipm", "ref": "pmnum", "map": map_pm, "save": "save_pm",
-           "attach": {"os": "pmsequence_load", "key": "pmnum", "as": "_sequences", "label": "PM Sequences"}},
+           "attach": {"os": "pmsequence_load", "key": "pmnum", "as": "_sequences", "label": "PM Sequences"},
+           # لو ولا PM فيه تكرار رجع بـ nextdate، يبقى اسم الحقل في النسخة دي من
+           # ماكسيمو غير كده - لازم يبان في التقرير بدل ما يتحفظ فاضي بصمت تاني
+           "expect": {"field": "nextdate", "when": "frequency", "label": "ميعاد التنفيذ الجاي (nextdate)"}},
     # خطوة مستقلة للسيكونس بس عشان تتجرب لوحدها: بتبعت الـ PM كامل (مش
     # السيكونس لوحده، لأن /pm/save بيمسح التكرار ويصفّر الموقع لو مجوش في
     # الطلب) لكن للـ PMs اللي ليها سيكونس بس، وبعدين بتقرا كل PM من تكنورا
@@ -702,6 +715,8 @@ class MigrationRun:
         self._init_type(type_key, len(records))
         if spec.get("attach"):
             await self._attach_children(type_key, spec["attach"], records)
+        if spec.get("expect"):
+            self._check_expected_field(type_key, spec["expect"], records)
         save_fn = getattr(self.teknora, spec["save"])
         for r in records:
             await self._save_record(type_key, spec, save_fn, client, r)
@@ -782,6 +797,17 @@ class MigrationRun:
                           f"بيرجع 404 لأي رقم فيه \"/\"، فمقدرناش نتأكد من السيكونس بتاعهم "
                           f"(وغالبًا شاشة تكنورا نفسها مش هتعرف تفتحهم) - أمثلة: {unreadable_slash[:5]}"),
             })
+
+    def _check_expected_field(self, type_key: str, expect: dict, records: list):
+        """ملاحظة في التقرير لو حقل لازم ميجيش في أي سجل من ماكسيمو خالص (غالبًا
+        اسمه مختلف في النسخة دي) - بالحقول اللي فيها "date" عشان نعرف اسمه."""
+        relevant = [r for r in records if r.get(expect["when"]) not in (None, "")]
+        if not relevant or any(r.get(expect["field"]) not in (None, "") for r in relevant):
+            return
+        date_keys = sorted({k for r in relevant[:50] for k in r if "date" in k.lower()})
+        self.state["types"][type_key]["failures"].append({"ref": "-", "error": (
+            f"{expect['label']}: مرجعش في ولا سجل من {len(relevant)} - اتحفظوا من غيره. "
+            f"الحقول اللي فيها date في رد ماكسيمو: {date_keys[:20]}")})
 
     async def _attach_children(self, type_key: str, attach: dict, records: list, children: list = None):
         """بيجيب سجلات فرعية من Object Structure منفصل (زي PMSEQUENCE_LOAD)
