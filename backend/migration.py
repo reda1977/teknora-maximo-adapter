@@ -325,9 +325,12 @@ def map_pm(m: dict) -> dict:
         # التوليد - فكل الخطط الأسبوعية طلعت على يوم غير يوم ماكسيمو (ماكسيمو
         # الأحد وتكنورا الخميس). extdate (التاريخ الممدّد) في ماكسيمو بيغلب
         # nextdate للأمر الجاي، واسمه في تكنورا exdate. بنبعت بس اللي راجع
-        # فعلًا: مفتاح بقيمة None كان هيكتب NULL مكان الـ default بتاع العمود
+        # فعلًا: مفتاح بقيمة None كان هيكتب NULL مكان الـ default بتاع العمود.
+        # targstarttime: ساعة بداية الأمر (ماكسيمو بيرجعها على تاريخ 1970، زي
+        # "1970-01-01T00:45:00+02:00") - محرك التوقعات بياخد الساعة منها، ومن
+        # غيرها بيحط 8:00
         for teknora_key, maximo_key in (("nextdate", "nextdate"), ("exdate", "extdate"),
-                                        ("usetargetdate", "usetargetdate")):
+                                        ("usetargetdate", "usetargetdate"), ("targstarttime", "targstarttime")):
             if m.get(maximo_key) not in (None, ""):
                 frequency[teknora_key] = m.get(maximo_key)
     # تابة السيكونس: /pm/save بيقبل "sequences" وبيطابقها على أعمدة
@@ -339,7 +342,13 @@ def map_pm(m: dict) -> dict:
         {"jpnum": s.get("jpnum"), "interval": s.get("interval")}
         for s in _sequence_rows(m.get("_sequences") or [])
     ]
+    # أيام الأسبوع المسموح فيها بالتوليد - نفس أسماء أعمدة PM في تكنورا، والمحرك
+    # بيزحلق أي ميعاد ليوم مش مسموح لأقرب يوم مسموح. اللي مرجعش مبيتبعتش (الافتراضي
+    # في تكنورا إن كل الأيام مسموحة)
+    weekdays = {d: m[d] for d in ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
+                if isinstance(m.get(d), bool)}
     return {
+        **weekdays,
         "pmnum": m.get("pmnum"),
         "description": m.get("description") or m.get("pmnum"),
         "status": m.get("status") or "ACTIVE",
