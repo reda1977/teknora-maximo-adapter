@@ -119,7 +119,7 @@ class TeknoraClient:
         """قيم حقول كستم لسجلات كتير (بأسماء الحقول) - PUT /custom-field-values/bulk،
         منفصل عن حفظ السجل نفسه فبيشتغل على أوامر الشغل المقفولة كمان"""
         url = f"{self.base_url}/custom-field-values/bulk"
-        done = 0
+        done, errors = 0, {}
         for n in range(0, len(records), 500):
             body = {"core_model_name": core_model_name, "records": records[n:n + 500]}
             res = await client.put(url, json=body, headers=self._headers(), timeout=600.0)
@@ -131,7 +131,9 @@ class TeknoraClient:
             if res.status_code >= 400:
                 raise Exception(f"HTTP {res.status_code}: {res.text[:300]}")
             done += len(body["records"])
-        return {"records": done}
+            # تكنورا بيحفظ اللي ينفع ويرجّع سبب كل سجل فشل (لو الحفظ الجماعي وقع)
+            errors.update((res.json() or {}).get("errors") or {})
+        return {"records": done, "errors": errors}
 
     async def patch_workorder_fields(self, client: httpx.AsyncClient, items: list) -> dict:
         """حقول مرجعية (pmnum) على أوامر موجودة حتى المقفولة - /migration/workorders/patch-fields"""
@@ -150,13 +152,16 @@ class TeknoraClient:
 
     async def save_wo_custom_fields_bulk(self, client: httpx.AsyncClient, payloads: list) -> dict:
         """حقول أوامر الشغل الإضافية: رقم الـ PM على أمر الشغل نفسه، والباقي حقول كستم"""
-        pm_items = [{"wonum": p["core_record_id"], "pmnum": p["pmnum"]}
+        pm_items = [{"wonum": p["core_record_id"], "site_id": p.get("site_id"), "pmnum": p["pmnum"]}
                     for p in payloads if p.get("core_record_id") and p.get("pmnum")]
         if pm_items:
             await self.patch_workorder_fields(client, pm_items)
-        await self.save_custom_values_bulk(
-            client, "WORKORDER", [{"core_record_id": p["core_record_id"], "values": p["values"]} for p in payloads])
-        return {"results": [{"error": None} for _ in payloads]}
+        out = await self.save_custom_values_bulk(
+            client, "WORKORDER", [{"core_record_id": p["core_record_id"], "site_id": p.get("site_id"), "values": p["values"]}
+                                  for p in payloads])
+        errors = out.get("errors") or {}
+        return {"results": [{"error": (f"HTTP 400: {errors[p.get('core_record_id')]}"
+                                       if p.get("core_record_id") in errors else None)} for p in payloads]}
 
     async def save_wo_custom_fields(self, client: httpx.AsyncClient, payload: dict) -> dict:
         return await self.save_wo_custom_fields_bulk(client, [payload])

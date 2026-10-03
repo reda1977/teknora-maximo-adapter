@@ -452,6 +452,9 @@ def map_wo_custom_fields(m: dict) -> dict:
                    key=lambda t: (t.get("taskid") is None, t.get("taskid") or 0, t.get("wonum") or ""))
     return {
         "core_record_id": m.get("wonum"),
+        # رقم أمر الشغل في ماكسيمو فريد جوه الموقع بس - تكنورا بيحفظ القيم بس لو الموقع
+        # هو موقع الأمر اللي اتنقل (نفس الرقم في موقعين كان بيوقع الدفعة كلها)
+        "site_id": m.get("siteid"),
         # مش حقل كستم: عمود pmnum في أمر الشغل نفسه، بيتحدّث من patch-fields
         "pmnum": m.get("pmnum") or None,
         "values": {
@@ -1336,7 +1339,12 @@ class MigrationRun:
         if self._custom_fields_unavailable or not records:
             return
         try:
-            await self.teknora.save_wo_custom_fields_bulk(client, [map_wo_custom_fields(r) for r in records])
+            results = (await self.teknora.save_wo_custom_fields_bulk(
+                client, [map_wo_custom_fields(r) for r in records])).get("results") or []
+            failed = [(r.get("wonum"), out["error"]) for r, out in zip(records, results) if out.get("error")]
+            if failed:
+                st = self.state["types"][type_key]
+                st["failures"].extend({"ref": wonum, "error": f"الحقول الإضافية: {err}"[:300]} for wonum, err in failed[:20])
         except Exception as e:
             self._custom_fields_unavailable = _describe_exc(e)
             self.state["types"][type_key]["failures"].append({"ref": "-", "error": (
