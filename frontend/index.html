@@ -613,7 +613,7 @@ function batchInfoHtml(key, batch) {
       ${retryNote}
       <span class="batch-controls">
         <label class="batch-size">${t('batch_size_label')}
-          <input type="number" id="batch-size" min="1000" step="1000" value="${batch.batch_size}" dir="ltr">
+          <input type="number" class="batch-size-input" id="batch-size-${key}" data-type="${key}" min="1000" step="1000" value="${batch.batch_size}" dir="ltr">
         </label>
         ${cp ? `<button type="button" class="link-btn" onclick="resetBatch('${key}')">${t('batch_reset_btn')}</button>` : ''}
       </span>
@@ -641,9 +641,12 @@ async function startMigration() {
   const checked = Array.from(document.querySelectorAll('#type-list input[type=checkbox]:checked')).map(c => c.value);
   if (checked.length === 0) { alert(t('select_one_alert')); return; }
 
-  const body = { types: checked };
-  const batchInput = document.getElementById('batch-size');
-  if (batchInput && Number(batchInput.value) > 0) body.batch_size = Number(batchInput.value);
+  // كل نوع مقسّم على دفعات ليه خانته - كان فيه خانة واحدة بنفس الـ id لكل الأنواع،
+  // فاللي بيتكتب في خانة نوع غير أوامر الشغل كان بيتجاهل
+  const body = { types: checked, batch_sizes: {} };
+  document.querySelectorAll('.batch-size-input').forEach(inp => {
+    if (checked.includes(inp.dataset.type) && Number(inp.value) > 0) body.batch_sizes[inp.dataset.type] = Number(inp.value);
+  });
 
   const res = await fetch(API + '/api/migrate/start', {
     method: 'POST', headers: {'Content-Type': 'application/json'},

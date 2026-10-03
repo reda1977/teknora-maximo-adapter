@@ -133,12 +133,33 @@ class TeknoraClient:
             done += len(body["records"])
         return {"records": done}
 
+    async def patch_workorder_fields(self, client: httpx.AsyncClient, items: list) -> dict:
+        """حقول مرجعية (pmnum) على أوامر موجودة حتى المقفولة - /migration/workorders/patch-fields"""
+        url = f"{self.base_url}/migration/workorders/patch-fields"
+        updated = 0
+        for n in range(0, len(items), 1000):
+            body = {"workorders": items[n:n + 1000]}
+            res = await client.post(url, json=body, headers=self._headers(), timeout=600.0)
+            if res.status_code == 401:
+                await self.login()
+                res = await client.post(url, json=body, headers=self._headers(), timeout=600.0)
+            if res.status_code >= 400:
+                raise Exception(f"HTTP {res.status_code}: {res.text[:300]}")
+            updated += (res.json() or {}).get("updated") or 0
+        return {"updated": updated}
+
     async def save_wo_custom_fields_bulk(self, client: httpx.AsyncClient, payloads: list) -> dict:
-        await self.save_custom_values_bulk(client, "WORKORDER", payloads)
+        """حقول أوامر الشغل الإضافية: رقم الـ PM على أمر الشغل نفسه، والباقي حقول كستم"""
+        pm_items = [{"wonum": p["core_record_id"], "pmnum": p["pmnum"]}
+                    for p in payloads if p.get("core_record_id") and p.get("pmnum")]
+        if pm_items:
+            await self.patch_workorder_fields(client, pm_items)
+        await self.save_custom_values_bulk(
+            client, "WORKORDER", [{"core_record_id": p["core_record_id"], "values": p["values"]} for p in payloads])
         return {"results": [{"error": None} for _ in payloads]}
 
     async def save_wo_custom_fields(self, client: httpx.AsyncClient, payload: dict) -> dict:
-        return await self.save_custom_values_bulk(client, "WORKORDER", [payload])
+        return await self.save_wo_custom_fields_bulk(client, [payload])
 
     async def save_person(self, client: httpx.AsyncClient, person: dict) -> dict:
         return await self._post(client, "/person/save", person)

@@ -431,6 +431,9 @@ def map_workorder(m: dict) -> dict:
         "actfinish": m.get("actfinish"),
         "reporteddate": m.get("reportdate") or m.get("reporteddate"),
         "reportedby": m.get("reportedby"),
+        # رقم الـ PM اللي ولّد الأمر - نص عادي في تكنورا (مش مفتاح خارجي) فمش
+        # محتاج الـ PMs تتنقل الأول
+        "pmnum": m.get("pmnum") or None,
     }
 
 
@@ -449,6 +452,8 @@ def map_wo_custom_fields(m: dict) -> dict:
                    key=lambda t: (t.get("taskid") is None, t.get("taskid") or 0, t.get("wonum") or ""))
     return {
         "core_record_id": m.get("wonum"),
+        # مش حقل كستم: عمود pmnum في أمر الشغل نفسه، بيتحدّث من patch-fields
+        "pmnum": m.get("pmnum") or None,
         "values": {
             "statusdate": _mx_local(m.get("statusdate")),
             "executiondept": m.get("executiondept") or None,
@@ -554,7 +559,7 @@ TYPE_SPECS = {
                        "assetnum", "location", "wopriority", "parent", "supervisor", "estdur",
                        "targstartdate", "targcompdate", "schedstart", "schedfinish",
                        "actstart", "actfinish", "reportdate", "reportedby", "istask",
-                       "statusdate", "executiondept")] + [
+                       "statusdate", "executiondept", "pmnum")] + [
                        "spi:woactivity{spi:taskid,spi:description,spi:status,spi:estdur}",
                        "spi:wplabor{spi:laborcode,spi:craft,spi:laborhrs,spi:quantity,spi:rate,spi:linecost}"]),
                    "select_fallback": "*"},
@@ -565,7 +570,8 @@ TYPE_SPECS = {
                          "save": "save_wo_custom_fields", "bulk_save": "save_wo_custom_fields_bulk",
                          "batch_key": "workorderid", "skip_if": "istask", "enrich": "_attach_wo_tasks",
                          "select": ",".join(f"spi:{f}" for f in (
-                             "workorderid", "wonum", "siteid", "istask", "statusdate", "executiondept")),
+                             "workorderid", "wonum", "siteid", "istask", "statusdate", "executiondept",
+                             "pmnum")),
                          "select_fallback": "*"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
@@ -592,11 +598,12 @@ TYPE_SPECS = {
 
 class MigrationRun:
     def __init__(self, maximo: MaximoClient, teknora: TeknoraClient, selected_types: list,
-                 batch_size: int = DEFAULT_BATCH_SIZE, mode: str = "migrate"):
+                 batch_size: int = DEFAULT_BATCH_SIZE, mode: str = "migrate", batch_sizes: dict = None):
         self.maximo = maximo
         self.teknora = teknora
         self.selected_types = set(selected_types)
         self.batch_size = batch_size
+        self.batch_sizes = dict(batch_sizes or {})  # نوع -> حجم دفعته (من خانة النوع في الواجهة)
         self.mode = mode  # migrate | retry
         self._select_override = {}  # os -> select بديل لو ماكسيمو رفض الـ select الأصلي
         self._in_unsupported = False  # ماكسيمو رفض "in [..]" (BMXAA8744E) -> قيمة قيمة
@@ -962,9 +969,10 @@ class MigrationRun:
         save_failed(cp_key, fail_entry)
         failed_items = fail_entry["items"]
 
-        self._init_type(type_key, self.batch_size)
+        batch_size = self.batch_sizes.get(type_key) or self.batch_size
+        self._init_type(type_key, batch_size)
         st = self.state["types"][type_key]
-        st["batch"] = {"size": self.batch_size, "start_after": start_after, "last_id": start_after,
+        st["batch"] = {"size": batch_size, "start_after": start_after, "last_id": start_after,
                        "migrated_before": cp.get("migrated", 0), "finished_all": False, "skipped": 0,
                        # ثواني في كل مرحلة - عشان لما النقل يبطأ نعرف السبب بالرقم.
                        # wait: الحفظ واقف مستني ماكسيمو (البفر فاضي). maximo/children:
@@ -1032,7 +1040,7 @@ class MigrationRun:
             حجم الدفعة بيتعد بالسجلات اللي بتتحفظ فعلًا: صفوف التاسكات (skip_if)
             بتيجي في نفس الترقيم بس مبتتحسبش - كانت بتتحسب، فدفعة "100 ألف" في
             أوامر PM كلها تاسكات كانت بتخلص عند حوالي 33 ألف أمر شغل"""
-            cursor, remaining = start_after, self.batch_size
+            cursor, remaining = start_after, batch_size
             try:
                 while remaining > 0:
                     where = f"spi:{key}>{cursor}" if cursor is not None else None
@@ -1328,7 +1336,7 @@ class MigrationRun:
         if self._custom_fields_unavailable or not records:
             return
         try:
-            await self.teknora.save_custom_values_bulk(client, "WORKORDER", [map_wo_custom_fields(r) for r in records])
+            await self.teknora.save_wo_custom_fields_bulk(client, [map_wo_custom_fields(r) for r in records])
         except Exception as e:
             self._custom_fields_unavailable = _describe_exc(e)
             self.state["types"][type_key]["failures"].append({"ref": "-", "error": (
