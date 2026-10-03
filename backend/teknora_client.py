@@ -115,6 +115,31 @@ class TeknoraClient:
             raise Exception(f"HTTP {res.status_code}: {res.text[:300]}")
         return res.json()
 
+    async def save_custom_values_bulk(self, client: httpx.AsyncClient, core_model_name: str, records: list) -> dict:
+        """قيم حقول كستم لسجلات كتير (بأسماء الحقول) - PUT /custom-field-values/bulk،
+        منفصل عن حفظ السجل نفسه فبيشتغل على أوامر الشغل المقفولة كمان"""
+        url = f"{self.base_url}/custom-field-values/bulk"
+        done = 0
+        for n in range(0, len(records), 500):
+            body = {"core_model_name": core_model_name, "records": records[n:n + 500]}
+            res = await client.put(url, json=body, headers=self._headers(), timeout=600.0)
+            if res.status_code == 401:
+                await self.login()
+                res = await client.put(url, json=body, headers=self._headers(), timeout=600.0)
+            if res.status_code in (404, 405):
+                raise BulkUnavailable(f"HTTP {res.status_code}: {res.text[:200]}")
+            if res.status_code >= 400:
+                raise Exception(f"HTTP {res.status_code}: {res.text[:300]}")
+            done += len(body["records"])
+        return {"records": done}
+
+    async def save_wo_custom_fields_bulk(self, client: httpx.AsyncClient, payloads: list) -> dict:
+        await self.save_custom_values_bulk(client, "WORKORDER", payloads)
+        return {"results": [{"error": None} for _ in payloads]}
+
+    async def save_wo_custom_fields(self, client: httpx.AsyncClient, payload: dict) -> dict:
+        return await self.save_custom_values_bulk(client, "WORKORDER", [payload])
+
     async def save_person(self, client: httpx.AsyncClient, person: dict) -> dict:
         return await self._post(client, "/person/save", person)
 

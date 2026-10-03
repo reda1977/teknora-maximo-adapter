@@ -54,6 +54,11 @@ LABTRANS_OS = "oslclabtrans"
 LABTRANS_SELECT = ",".join(f"spi:{f}" for f in (
     "refwo", "siteid", "laborcode", "craft", "regularhrs", "payrate", "linecost",
     "startdate", "startdateentered", "finishdate", "finishdateentered", "transtype"))
+# تاسكات أمر الشغل (صفوف istask) - executiondept حقل مخصص عند العميل (جهة التنفيذ)،
+# من عينة حقيقية لـ MXAPIWODETAIL (WO-6614336)
+WO_TASK_SELECT = ",".join(f"spi:{f}" for f in (
+    "wonum", "parent", "siteid", "taskid", "description", "status",
+    "actstart", "actfinish", "statusdate", "executiondept"))
 
 
 def load_checkpoints() -> dict:
@@ -123,7 +128,8 @@ def _describe_exc(e: Exception) -> str:
 
 MIGRATION_ORDER = [
     "organizations", "persons", "crafts", "labor", "locations", "assets",
-    "meters", "workorders", "meterreadings", "locationmeterreadings", "jobplans", "pm", "pmsequences",
+    "meters", "workorders", "wo_custom_fields", "meterreadings", "locationmeterreadings", "jobplans", "pm",
+    "pmsequences",
 ]
 # تسمية الأنواع (بالعربي والإنجليزي) مسؤولية الواجهة الأمامية بالكامل -
 # الباك إند بيرجع بس المفاتيح التقنية (زي "assets")، عشان تبديل اللغة
@@ -428,6 +434,35 @@ def map_workorder(m: dict) -> dict:
     }
 
 
+def _mx_local(value):
+    """تاريخ ماكسيمو ("2026-08-22T12:36:28+03:00") بتوقيت السيرفر من غير المنطقة
+    الزمنية - نفس شكل تواريخ أوامر الشغل اللي اتنقلت، واللي حقل datetime بيقبله"""
+    return value[:19] if isinstance(value, str) and value else None
+
+
+def map_wo_custom_fields(m: dict) -> dict:
+    """حقول ماكسيمو اللي مالهاش عمود في تكنورا، بتتحفظ كحقول كستم على أمر الشغل
+    (لازم تكون متعرّفة في تكنورا: statusdate، executiondept، maximo_tasks).
+    maximo_tasks: التاسكات بأرقام أوامرها في ماكسيمو وتواريخها وحالتها وجهة
+    التنفيذ - تقارير ماكسيمو بتعرضها كأوامر شغل مستقلة"""
+    tasks = sorted(m.get("_tasks") or [],
+                   key=lambda t: (t.get("taskid") is None, t.get("taskid") or 0, t.get("wonum") or ""))
+    return {
+        "core_record_id": m.get("wonum"),
+        "values": {
+            "statusdate": _mx_local(m.get("statusdate")),
+            "executiondept": m.get("executiondept") or None,
+            "maximo_tasks": [
+                {"wonum": t.get("wonum"), "taskid": t.get("taskid"), "description": t.get("description"),
+                 "status": t.get("status"), "actstart": _mx_local(t.get("actstart")),
+                 "actfinish": _mx_local(t.get("actfinish")), "statusdate": _mx_local(t.get("statusdate")),
+                 "executiondept": t.get("executiondept") or None}
+                for t in tasks
+            ],
+        },
+    }
+
+
 def map_person(m: dict) -> dict:
     return {
         "personid": m.get("personid"),
@@ -513,15 +548,25 @@ TYPE_SPECS = {
     # صيغة الـ select المتداخلة، بناخد كل الحقول (أبطأ بس شغال)
     "workorders": {"os": "mxapiwodetail", "ref": "wonum", "map": map_workorder, "save": "save_workorder",
                    "batch_key": "workorderid", "skip_if": "istask", "enrich": "_attach_actual_labor",
-                   "bulk_save": "save_workorders_bulk",
+                   "bulk_save": "save_workorders_bulk", "after_save": "_push_wo_custom_fields",
                    "select": ",".join([f"spi:{f}" for f in (
                        "workorderid", "wonum", "siteid", "orgid", "description", "worktype", "status",
                        "assetnum", "location", "wopriority", "parent", "supervisor", "estdur",
                        "targstartdate", "targcompdate", "schedstart", "schedfinish",
-                       "actstart", "actfinish", "reportdate", "reportedby", "istask")] + [
+                       "actstart", "actfinish", "reportdate", "reportedby", "istask",
+                       "statusdate", "executiondept")] + [
                        "spi:woactivity{spi:taskid,spi:description,spi:status,spi:estdur}",
                        "spi:wplabor{spi:laborcode,spi:craft,spi:laborhrs,spi:quantity,spi:rate,spi:linecost}"]),
                    "select_fallback": "*"},
+    # تكملة لأوامر اتنقلت قبل الحقول الكستم: نفس ترتيب ودفعات أوامر الشغل، بس
+    # بيجيب الحقول دي والتاسكات ويحفظهم في /custom-field-values/bulk (مابيلمسش
+    # أمر الشغل نفسه، فبيشتغل على الأوامر المقفولة)
+    "wo_custom_fields": {"os": "mxapiwodetail", "ref": "wonum", "map": map_wo_custom_fields,
+                         "save": "save_wo_custom_fields", "bulk_save": "save_wo_custom_fields_bulk",
+                         "batch_key": "workorderid", "skip_if": "istask", "enrich": "_attach_wo_tasks",
+                         "select": ",".join(f"spi:{f}" for f in (
+                             "workorderid", "wonum", "siteid", "istask", "statusdate", "executiondept")),
+                         "select_fallback": "*"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
     # attach: العمالة من JOBPLANLABOR_LOAD بـ (jpnum, siteid) - ولو السطور
@@ -556,6 +601,7 @@ class MigrationRun:
         self._select_override = {}  # os -> select بديل لو ماكسيمو رفض الـ select الأصلي
         self._in_unsupported = False  # ماكسيمو رفض "in [..]" (BMXAA8744E) -> قيمة قيمة
         self._bulk_unavailable = None  # سبب إن الحفظ الجماعي مش متاح في تكنورا -> أمر أمر
+        self._custom_fields_unavailable = None  # حقول ماكسيمو الكستم مش متعرّفة في تكنورا
         # عدد الفشل في آخر _save_many اللي سببه الطلب نفسه (مش رد تكنورا على السجل)
         self._last_request_failures = 0
         self.state = {
@@ -619,8 +665,15 @@ class MigrationRun:
                 r[key] = resolved.get(key) or resolved.get("location") or resolved.get("assetnum")
 
     async def _save_many(self, type_key: str, spec: dict, client: httpx.AsyncClient, records: list) -> list:
-        """خطأ لكل سجل (None = اتحفظ) بنفس الترتيب. جماعي لو النوع ليه
-        bulk_save وتكنورا بيدعمه، وإلا أمر أمر بالتوازي."""
+        """خطأ لكل سجل (None = اتحفظ) بنفس الترتيب، وبعدها after_save لو النوع ليه
+        (زي حقول ماكسيمو الكستم لأوامر الشغل)."""
+        errs = await self._save_records(type_key, spec, client, records)
+        if spec.get("after_save"):
+            await getattr(self, spec["after_save"])(type_key, client, records)
+        return errs
+
+    async def _save_records(self, type_key: str, spec: dict, client: httpx.AsyncClient, records: list) -> list:
+        """جماعي لو النوع ليه bulk_save وتكنورا بيدعمه، وإلا أمر أمر بالتوازي."""
         if spec.get("bulk_save") and self._bulk_unavailable is None:
             try:
                 return await self._save_bulk(type_key, spec, client, records)
@@ -1232,14 +1285,10 @@ class MigrationRun:
             if p.get("wonum"):
                 by_site.setdefault(p.get("siteid"), []).append(p)
 
-        for site, ps in by_site.items():
-            site_cond = f'spi:siteid={json.dumps(site)} and ' if site else ""
-            owner = {p["wonum"]: p for p in ps}
-            tasks = await self._query_in(spec["os"], "parent", list(owner), site_cond,
-                                         "spi:wonum,spi:parent,spi:siteid", "تاسكات أوامر الشغل")
-            for t in tasks:
-                if t.get("wonum") and t.get("parent") in owner:
-                    owner.setdefault(t["wonum"], owner[t["parent"]])
+        for site, (site_cond, owner) in (await self._attach_wo_tasks(spec, parents)).items():
+            for p in list(owner.values()):
+                for t in p["_tasks"]:
+                    owner.setdefault(t["wonum"], p)
 
             rows = await self._query_in(LABTRANS_OS, "refwo", list(owner), site_cond,
                                         LABTRANS_SELECT, "العمالة الفعلية")
@@ -1247,6 +1296,44 @@ class MigrationRun:
                 parent = owner.get(row.get("refwo"))
                 if parent is not None:
                     parent["_actual_labor"].append(row)
+
+    async def _attach_wo_tasks(self, spec: dict, parents: list) -> dict:
+        """تاسكات كل أمر في الصفحة (صفوف istask اللي parent بتاعها الأمر) في
+        p["_tasks"] - بالرقم والتواريخ والحالة وجهة التنفيذ. woactivity جوه
+        MXAPIWODETAIL مبيرجعش رقم أمر التاسك (wonum فاضي)، فبتتجاب بـ parent.
+        بيرجع {site: (شرط الموقع، {wonum: الأمر})} لاستخدامه في العمالة."""
+        for p in parents:
+            p["_tasks"] = []
+        by_site = {}
+        for p in parents:
+            if p.get("wonum"):
+                by_site.setdefault(p.get("siteid"), []).append(p)
+        owners = {}
+        for site, ps in by_site.items():
+            site_cond = f'spi:siteid={json.dumps(site)} and ' if site else ""
+            owner = {p["wonum"]: p for p in ps}
+            tasks = await self._query_in(spec["os"], "parent", list(owner), site_cond,
+                                         WO_TASK_SELECT, "تاسكات أوامر الشغل")
+            for t in tasks:
+                parent = owner.get(t.get("parent"))
+                if t.get("wonum") and parent is not None:
+                    parent["_tasks"].append(t)
+            owners[site] = (site_cond, owner)
+        return owners
+
+    async def _push_wo_custom_fields(self, type_key: str, client: httpx.AsyncClient, records: list):
+        """بعد حفظ صفحة أوامر الشغل: الحقول الكستم (statusdate/executiondept/
+        maximo_tasks) لكل أوامر الصفحة - حتى المقفولة اللي اتنقلت قبل كده. لو
+        الحقول مش متعرّفة في تكنورا بنقول مرة واحدة ونكمل نقل الأوامر من غيرها."""
+        if self._custom_fields_unavailable or not records:
+            return
+        try:
+            await self.teknora.save_custom_values_bulk(client, "WORKORDER", [map_wo_custom_fields(r) for r in records])
+        except Exception as e:
+            self._custom_fields_unavailable = _describe_exc(e)
+            self.state["types"][type_key]["failures"].append({"ref": "-", "error": (
+                f"حقول ماكسيمو الإضافية (statusdate/executiondept/maximo_tasks) ماتحفظتش - "
+                f"عرّفها كحقول كستم على أمر الشغل وشغّل خطوة wo_custom_fields: {self._custom_fields_unavailable}")})
 
     async def _query_in(self, os_name: str, field: str, values: list, prefix_cond: str,
                         select: str, what: str) -> list:
