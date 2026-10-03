@@ -431,6 +431,9 @@ def map_workorder(m: dict) -> dict:
         "actfinish": m.get("actfinish"),
         "reporteddate": m.get("reportdate") or m.get("reporteddate"),
         "reportedby": m.get("reportedby"),
+        # رقم الـ PM اللي ولّد الأمر - نص عادي في تكنورا (مش مفتاح خارجي) فمش
+        # محتاج الـ PMs تتنقل الأول
+        "pmnum": m.get("pmnum") or None,
     }
 
 
@@ -449,6 +452,8 @@ def map_wo_custom_fields(m: dict) -> dict:
                    key=lambda t: (t.get("taskid") is None, t.get("taskid") or 0, t.get("wonum") or ""))
     return {
         "core_record_id": m.get("wonum"),
+        # مش حقل كستم: عمود pmnum في أمر الشغل نفسه، بيتحدّث من patch-fields
+        "pmnum": m.get("pmnum") or None,
         "values": {
             "statusdate": _mx_local(m.get("statusdate")),
             "executiondept": m.get("executiondept") or None,
@@ -554,7 +559,7 @@ TYPE_SPECS = {
                        "assetnum", "location", "wopriority", "parent", "supervisor", "estdur",
                        "targstartdate", "targcompdate", "schedstart", "schedfinish",
                        "actstart", "actfinish", "reportdate", "reportedby", "istask",
-                       "statusdate", "executiondept")] + [
+                       "statusdate", "executiondept", "pmnum")] + [
                        "spi:woactivity{spi:taskid,spi:description,spi:status,spi:estdur}",
                        "spi:wplabor{spi:laborcode,spi:craft,spi:laborhrs,spi:quantity,spi:rate,spi:linecost}"]),
                    "select_fallback": "*"},
@@ -565,7 +570,8 @@ TYPE_SPECS = {
                          "save": "save_wo_custom_fields", "bulk_save": "save_wo_custom_fields_bulk",
                          "batch_key": "workorderid", "skip_if": "istask", "enrich": "_attach_wo_tasks",
                          "select": ",".join(f"spi:{f}" for f in (
-                             "workorderid", "wonum", "siteid", "istask", "statusdate", "executiondept")),
+                             "workorderid", "wonum", "siteid", "istask", "statusdate", "executiondept",
+                             "pmnum")),
                          "select_fallback": "*"},
     "meterreadings": {"os": "mxmeterdata", "ref": "assetnum", "map": map_meter_reading, "save": "save_meter_reading"},
     "locationmeterreadings": {"os": "oslclocationmeter", "ref": "location", "map": map_location_meter_reading, "save": "save_location_meter_reading"},
@@ -1328,7 +1334,7 @@ class MigrationRun:
         if self._custom_fields_unavailable or not records:
             return
         try:
-            await self.teknora.save_custom_values_bulk(client, "WORKORDER", [map_wo_custom_fields(r) for r in records])
+            await self.teknora.save_wo_custom_fields_bulk(client, [map_wo_custom_fields(r) for r in records])
         except Exception as e:
             self._custom_fields_unavailable = _describe_exc(e)
             self.state["types"][type_key]["failures"].append({"ref": "-", "error": (
